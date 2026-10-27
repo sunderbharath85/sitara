@@ -33,6 +33,25 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
    - Video, HEIC and RAW use the Windows Shell thumbnailer (`IShellItemImageFactory`, backed by the OS thumbnail cache), then FFmpeg if it is on `PATH`.
 7. **Viewer:** the cached thumbnail appears instantly, then the original swaps in. Originals load through the asset protocol, or through `preview://` for formats the webview can't decode. The histogram, palette and mood tags are computed from the thumbnail's pixels in a canvas.
 
+## Smart albums and cleanup (stage 2)
+
+- **Analysis (`analysis.rs`):**
+  - After a photo's thumbnail is cached, the warmer computes from it a 64-bit difference hash, a sharpness score (variance of the Laplacian), mean brightness, contrast, and the share of clipped pixels. These go in the `analysis` table.
+  - Reading the 360 px thumbnail instead of the original keeps this at a few milliseconds per photo.
+  - When a file changes, its analysis row and content hash are dropped.
+- **Cleanup (`cleanup.rs`, on demand):**
+  - **Exact duplicates:** blake3, only for files that share a size with another file, cached in `media.chash`.
+  - **Similar shots:** a Hamming distance of 4 or less anywhere in the library, found without comparing every pair. Any two hashes that close share at least one identical 16-bit quarter, so photos are bucketed by each quarter and compared only within buckets. Bursts get a looser match (distance 8 or less, up to 10 s apart).
+  - **Possibly blurry:** low sharpness in a scene that has real contrast.
+  - **Old screenshots:** matched by file and folder name.
+  - **Best pick:** scored on sharpness, exposure, resolution and clipping, and favorites always win.
+- **Smart albums (`smart.rs`, on demand):**
+  - GPS points map to the nearest city with 15k+ people (`geo.rs`, embedded GeoNames data on a 1° grid).
+  - Home is your most frequent city.
+  - Trips are runs of photos with no gap over 30 h, whose cities cluster more than 60 km from home; neighbouring runs in the same city merge.
+  - Places are per-city groups of 5 or more photos.
+  - Collections are simple rules over the media table.
+
 ## Conventions
 
 - **Capture time** (`taken`) is the wall-clock time the photo was taken, stored as seconds as if it were UTC. Every UI formatter uses `timeZone: "UTC"`, so a photo taken at 9:00 in Kyoto reads 9:00 everywhere. Order of preference: EXIF `DateTimeOriginal`, then MP4 `mvhd` creation time converted to local time, then file mtime.

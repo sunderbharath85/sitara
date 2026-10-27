@@ -75,7 +75,8 @@ export function Palette() {
     { g: "Show", t: "Videos", ic: "video", run: () => runSearch("videos") },
     { g: "Go to", t: "Library", ic: "grid", hint: "1", run: () => store.set({ view: "library", album: null }) },
     { g: "Go to", t: "Albums", ic: "layers", hint: "2", run: () => store.set({ view: "albums", album: null }) },
-    { g: "Go to", t: "Folders", ic: "folder", hint: "3", run: () => store.set({ view: "folders", album: null }) },
+    { g: "Go to", t: "Cleanup · duplicates, similar, blurry", ic: "spark", hint: "3", run: () => store.set({ view: "cleanup", album: null }) },
+    { g: "Go to", t: "Folders", ic: "folder", hint: "4", run: () => store.set({ view: "folders", album: null }) },
   ];
   const monthCmds: Cmd[] = months.map((m) => ({ g: "Jump to", t: fmtMonth(m.t), ic: "pin", hint: plural(m.n, "item"), run: () => jumpTo(m.id) }));
   let items = base.filter((c) => !ql || `${c.t} ${c.g}`.toLowerCase().includes(ql));

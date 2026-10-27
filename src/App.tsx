@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { AlbumsView } from "./components/Albums";
 import { AlbumPicker, Dock, TopBar, Tray } from "./components/Chrome";
+import { CleanupView } from "./components/Cleanup";
 import { FoldersView, Welcome } from "./components/Folders";
 import { activeGrid, Grid } from "./components/Grid";
 import { Palette } from "./components/Palette";
@@ -118,8 +119,8 @@ export default function App() {
         if (s.sel.size) clearSel();
         else if (s.search && s.view === "library") store.set({ search: null });
         else if (s.album) store.set({ album: null });
-      } else if (!mod && (k === "1" || k === "2" || k === "3")) {
-        store.set({ view: (["library", "albums", "folders"] as const)[+k - 1], album: k === "2" ? s.album : null });
+      } else if (!mod && (k === "1" || k === "2" || k === "3" || k === "4")) {
+        store.set({ view: (["library", "albums", "cleanup", "folders"] as const)[+k - 1], album: k === "2" ? s.album : null });
       } else if (mod && k.toLowerCase() === "a") {
         e.preventDefault();
         setSel(activeGrid.ids());
@@ -156,6 +157,9 @@ export default function App() {
         <section className={`view${view === "library" ? " on" : ""}`}>{lib && <LibraryView lib={lib} active={view === "library"} />}</section>
         <section className={`view${view === "albums" ? " on" : ""}`}>
           <AlbumsView active={view === "albums"} />
+        </section>
+        <section className={`view${view === "cleanup" ? " on" : ""}`}>
+          <CleanupView active={view === "cleanup"} />
         </section>
         <section className={`view${view === "folders" ? " on" : ""}`}>
           <FoldersView />

@@ -15,6 +15,7 @@ export const dayPart = (h: number) =>
   h < 5 ? "night" : h < 9 ? "early morning" : h < 12 ? "morning" : h < 16 ? "afternoon" : h < 18 ? "golden hour" : h < 20 ? "evening" : "night";
 
 export function fmtSize(bytes: number) {
+  if (bytes <= 0) return "0 MB";
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
   if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1e3))} KB`;

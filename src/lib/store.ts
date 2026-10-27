@@ -1,11 +1,11 @@
 import { useSyncExternalStore } from "react";
 import { EMPTY_STATUS, type FolderInfo, type Lib, type Status } from "./api";
 
-export type View = "library" | "albums" | "folders";
+export type View = "library" | "albums" | "cleanup" | "folders";
 
-/** An album page: a manual album, or a folder shown as an album. */
+/** An album page: a manual album, a folder shown as an album, or a smart album. */
 export interface AlbumPage {
-  kind: "album" | "dir";
+  kind: "album" | "dir" | "smart";
   id?: number;
   dir?: string;
   title: string;

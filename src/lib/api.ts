@@ -62,6 +62,8 @@ export interface Status {
   warming: boolean;
   thumbsPending: number;
   thumbsDone: number;
+  analyzing: boolean;
+  analysisPending: number;
 }
 
 export interface AlbumInfo {
@@ -88,7 +90,55 @@ export interface Suggestion {
   label: string;
 }
 
-export const EMPTY_STATUS: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0 };
+export const EMPTY_STATUS: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0, analyzing: false, analysisPending: 0 };
+
+export interface SmartAlbum {
+  key: string;
+  kind: "trip" | "place" | "smart";
+  title: string;
+  sub: string;
+  ids: number[];
+  covers: number[];
+}
+
+export interface CItem {
+  id: number;
+  name: string;
+  dir: string;
+  size: number;
+  w: number;
+  h: number;
+  taken: number;
+  fav: boolean;
+  sharp: number;
+  luma: number;
+  clip: number;
+}
+export interface CGroup {
+  kind: "exact" | "similar";
+  items: CItem[];
+  best: number;
+}
+export interface CleanupReport {
+  exact: CGroup[];
+  similar: CGroup[];
+  blurry: CItem[];
+  shots: CItem[];
+  stats: {
+    exactGroups: number;
+    exactExtra: number;
+    exactBytes: number;
+    similarGroups: number;
+    similarExtra: number;
+    similarBytes: number;
+    blurry: number;
+    blurryBytes: number;
+    shots: number;
+    shotsBytes: number;
+    analyzed: number;
+    pending: number;
+  };
+}
 
 export function decodeLibrary(buf: ArrayBuffer): Lib {
   const dv = new DataView(buf);
@@ -157,6 +207,8 @@ export const api = {
   search: (q: string) => call<number[]>("search", { q }),
   reveal: (id: number) => call<void>("reveal", { id }),
   openExternal: (id: number) => call<void>("open_external", { id }),
+  smartAlbums: () => call<SmartAlbum[]>("smart_albums"),
+  cleanupScan: () => call<CleanupReport>("cleanup_scan"),
 
   async pickFolder(): Promise<string | null> {
     if (mock) return mock.pickFolder();
@@ -177,6 +229,11 @@ export const api = {
   onLibraryChanged(cb: () => void) {
     if (mock) return mock.on("library-changed", cb);
     const un = listen("library-changed", () => cb());
+    return () => void un.then((f) => f());
+  },
+  onAnalysisChanged(cb: () => void) {
+    if (mock) return mock.on("analysis-changed", cb);
+    const un = listen("analysis-changed", () => cb());
     return () => void un.then((f) => f());
   },
   onDropFolders(cb: (paths: string[]) => void) {

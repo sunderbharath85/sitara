@@ -1,10 +1,14 @@
+mod analysis;
+mod cleanup;
 mod commands;
 mod db;
+mod geo;
 mod meta;
 mod protocol;
 mod scan;
 #[cfg(windows)]
 mod shell;
+mod smart;
 mod thumbs;
 mod watch;
 
@@ -17,6 +21,8 @@ use tokio::sync::Semaphore;
 
 pub struct AppState {
     pub db: Mutex<Connection>,
+    /// Heavy read-mostly work (smart albums, cleanup) opens its own connection off the main thread.
+    pub db_path: PathBuf,
     pub cache: PathBuf,
     pub indexer: scan::Indexer,
     pub watchers: Mutex<HashMap<i64, watch::Watcher>>,
@@ -51,10 +57,11 @@ pub fn run() {
             let conn = db::open(&db_path)?;
             db::migrate(&conn)?;
             let roots = db::folder_roots(&conn)?;
-            let indexer = scan::start(h.clone(), db_path, cache.clone());
+            let indexer = scan::start(h.clone(), db_path.clone(), cache.clone());
             let slots = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).max(2);
             app.manage(AppState {
                 db: Mutex::new(conn),
+                db_path,
                 cache,
                 indexer,
                 watchers: Mutex::new(HashMap::new()),
@@ -91,6 +98,8 @@ pub fn run() {
             commands::search,
             commands::reveal,
             commands::open_external,
+            commands::smart_albums,
+            commands::cleanup_scan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sitara");

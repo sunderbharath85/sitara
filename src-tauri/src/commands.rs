@@ -278,3 +278,23 @@ pub fn reveal(app: AppHandle, s: State<'_, AppState>, id: i64) -> R<()> {
 pub fn open_external(app: AppHandle, s: State<'_, AppState>, id: i64) -> R<()> {
     app.opener().open_path(path_of(&s, id)?, None::<&str>).map_err(e)
 }
+
+async fn off_main<T: Send + 'static>(s: &AppState, f: impl FnOnce(&rusqlite::Connection) -> rusqlite::Result<T> + Send + 'static) -> R<T> {
+    let path = s.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let c = db::open(&path).map_err(e)?;
+        f(&c).map_err(e)
+    })
+    .await
+    .map_err(e)?
+}
+
+#[tauri::command]
+pub async fn smart_albums(s: State<'_, AppState>) -> R<Vec<crate::smart::SmartAlbum>> {
+    off_main(&s, crate::smart::compute).await
+}
+
+#[tauri::command]
+pub async fn cleanup_scan(s: State<'_, AppState>) -> R<crate::cleanup::Report> {
+    off_main(&s, crate::cleanup::scan).await
+}

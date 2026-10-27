@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, thumbUrl, type Albums as AlbumsData, type Lib } from "../lib/api";
+import { api, thumbUrl, type Albums as AlbumsData, type Lib, type SmartAlbum } from "../lib/api";
 import { startShow } from "../lib/actions";
 import { fmtNum, plural } from "../lib/format";
 import { setSel, store, useStore, type AlbumPage as Page } from "../lib/store";
@@ -8,7 +8,16 @@ import { Grid } from "./Grid";
 import { Icon } from "./Icon";
 import { toast } from "./Toasts";
 
-type Filter = "all" | "albums" | "folders";
+type Filter = "all" | "trips" | "places" | "smart" | "albums" | "folders";
+const FILTERS: [Filter, string][] = [
+  ["all", "All"],
+  ["trips", "Trips"],
+  ["places", "Places"],
+  ["smart", "Smart"],
+  ["albums", "Your albums"],
+  ["folders", "Folders"],
+];
+const BADGE: Record<SmartAlbum["kind"], string> = { trip: "Auto · Trip", place: "Place", smart: "Smart" };
 
 function Stack({ lib, covers }: { lib: Lib; covers: number[] }) {
   const imgs = covers.slice(0, 3).filter((id) => lib.pos.has(id));
@@ -28,20 +37,47 @@ export function AlbumsView({ active }: { active: boolean }) {
   const libVer = useStore((s) => s.libVer);
   const page = useStore((s) => s.album);
   const [data, setData] = useState<AlbumsData | null>(null);
+  const [smart, setSmart] = useState<SmartAlbum[]>([]);
   const [filter, setFilter] = useState<Filter>("all");
   const [naming, setNaming] = useState(false);
-  const load = () => api.albums().then(setData).catch((e) => toast(String(e)));
+  const load = () => {
+    api.albums().then(setData).catch((e) => toast(String(e)));
+    api.smartAlbums().then(setSmart).catch(() => {});
+  };
   useEffect(() => {
     if (active && !page) load();
   }, [active, page, libVer]);
+  useEffect(() => api.onAnalysisChanged(() => active && !store.get().album && api.smartAlbums().then(setSmart).catch(() => {})), [active]);
 
   if (!lib) return null;
   if (page) return <AlbumPage lib={lib} page={page} active={active} onChanged={load} />;
 
-  const cards = [
-    ...(filter !== "folders" ? (data?.manual ?? []).map((a) => ({ key: `a${a.id}`, title: a.name, sub: "Album", count: a.count, covers: a.covers, open: () => openAlbum(a.id, a.name), manual: true })) : []),
-    ...(filter !== "albums" ? (data?.folders ?? []).map((f) => ({ key: `d${f.dir}`, title: f.name, sub: f.parent, count: f.count, covers: f.covers, open: () => openDir(f.dir, f.name), manual: false })) : []),
+  type Card = { key: string; title: string; sub: string; count: number; covers: number[]; badge: string; auto: boolean; open: () => void; ids: () => Promise<number[]> };
+  const smartCard = (a: SmartAlbum): Card => ({
+    key: a.key, title: a.title, sub: a.sub, count: a.ids.length, covers: a.covers, badge: BADGE[a.kind], auto: a.kind !== "smart",
+    open: () => store.set({ view: "albums", album: { kind: "smart", title: a.title, ids: a.ids } }),
+    ids: async () => a.ids,
+  });
+  const show = (f: Filter) => filter === "all" || filter === f;
+  const cards: Card[] = [
+    ...(show("trips") ? smart.filter((a) => a.kind === "trip").map(smartCard) : []),
+    ...(show("albums")
+      ? (data?.manual ?? []).map((a) => ({
+          key: `a${a.id}`, title: a.name, sub: "Album", count: a.count, covers: a.covers, badge: "Album", auto: false,
+          open: () => openAlbum(a.id, a.name), ids: () => api.albumItems(a.id),
+        }))
+      : []),
+    ...(show("smart") ? smart.filter((a) => a.kind === "smart").map(smartCard) : []),
+    ...(show("places") ? smart.filter((a) => a.kind === "place").map(smartCard) : []),
+    ...(show("folders")
+      ? (data?.folders ?? []).map((f) => ({
+          key: `d${f.dir}`, title: f.name, sub: f.parent, count: f.count, covers: f.covers, badge: "Folder", auto: true,
+          open: () => openDir(f.dir, f.name), ids: () => api.dirItems(f.dir),
+        }))
+      : []),
   ];
+  const nTrips = smart.filter((a) => a.kind === "trip").length;
+  const nPlaces = smart.filter((a) => a.kind === "place").length;
   return (
     <div className="scroller page" onScroll={(e) => document.body.classList.toggle("scrolled", e.currentTarget.scrollTop > 10)}>
       <div className="page-head">
@@ -50,11 +86,13 @@ export function AlbumsView({ active }: { active: boolean }) {
         </div>
         <div className="sec-title">
           <div className="kicker">
-            <span className="pill-acc">{plural(data?.folders.length ?? 0, "folder")} auto-sorted</span>
-            <span>{plural(data?.manual.length ?? 0, "album")}</span>
+            <span className="pill-acc">{fmtNum(smart.length + (data?.folders.length ?? 0))} built for you</span>
+            <span>
+              {plural(nTrips, "trip")} · {plural(nPlaces, "place")} · {plural(data?.manual.length ?? 0, "album")}
+            </span>
           </div>
           <h2>Albums</h2>
-          <div className="stats sans">Every folder becomes an album automatically. Make your own from any selection.</div>
+          <div className="stats sans">Trips, places and folders sort themselves as photos arrive. Place names come from an offline map, nothing is looked up online.</div>
         </div>
         <div className="head-acts">
           <button className="btn-acc" onClick={() => setNaming(true)}>
@@ -64,23 +102,27 @@ export function AlbumsView({ active }: { active: boolean }) {
         </div>
       </div>
       <div className="chips">
-        {(["all", "albums", "folders"] as Filter[]).map((f) => (
+        {FILTERS.map(([f, label]) => (
           <button key={f} className={`chip${filter === f ? " on" : ""}`} onClick={() => setFilter(f)}>
-            {f === "all" ? "All" : f === "albums" ? "Your albums" : "Folders"}
+            {label}
           </button>
         ))}
       </div>
       {data && cards.length === 0 && (
         <div className="empty">
-          <b>No albums yet</b>
-          <span>Select photos in the Library, then choose “Add to album”.</span>
+          <b>{filter === "trips" ? "No trips found yet" : filter === "places" ? "No places yet" : "No albums yet"}</b>
+          <span>
+            {filter === "trips" || filter === "places"
+              ? "Trips and places need photos with GPS. Phones add it when location is on for the camera."
+              : "Select photos in the Library, then choose “Add to album”."}
+          </span>
         </div>
       )}
       <div className="albums">
         {cards.map((c, k) => (
           <article key={c.key} className="album" style={{ "--i": Math.min(k, 12), "--len": Math.max(...c.title.split(/\s+/).map((w) => w.length)) } as React.CSSProperties} onClick={c.open}>
             <Stack lib={lib} covers={c.covers} />
-            <span className={`badge glass${c.manual ? "" : " auto"}`}>{c.manual ? "Album" : "Folder"}</span>
+            <span className={`badge glass${c.auto ? " auto" : ""}`}>{c.badge}</span>
             <h3>{c.title}</h3>
             <button
               className="al-play"
@@ -88,8 +130,7 @@ export function AlbumsView({ active }: { active: boolean }) {
               aria-label={`Play ${c.title} as a slideshow`}
               onClick={async (e) => {
                 e.stopPropagation();
-                const ids = c.manual ? await api.albumItems(+c.key.slice(1)) : await api.dirItems(c.key.slice(1));
-                startShow(ids, c.title);
+                startShow(await c.ids(), c.title);
               }}
             >
               <Icon n="play" s={16} />
@@ -100,6 +141,11 @@ export function AlbumsView({ active }: { active: boolean }) {
           </article>
         ))}
       </div>
+      {nPlaces + nTrips > 0 && (
+        <p className="hint credit">
+          Place names from <button onClick={() => api.openUrl("https://www.geonames.org")}>GeoNames</button>, CC BY 4.0. Matched offline on this device.
+        </p>
+      )}
       {naming && (
         <Prompt
           title="New album"
@@ -145,7 +191,7 @@ function AlbumPage({ lib, page, active, onChanged }: { lib: Lib; page: Page; act
         <h2>{page.title}</h2>
         <div className="stats">
           {plural(order.length, "item")}
-          {page.kind === "dir" ? ` · ${page.dir}` : ""}
+          {page.kind === "dir" ? ` · ${page.dir}` : page.kind === "smart" ? " · smart album" : ""}
         </div>
       </div>
       <div className="head-acts">

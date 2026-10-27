@@ -1,6 +1,6 @@
 // In-browser stand-in for the Rust backend so the UI can be developed and tested in a plain browser
 // (`npm run dev`). Loaded only when not running inside Tauri; uses picsum.photos sample images.
-import type { AlbumInfo, Albums, DirAlbum, FolderInfo, MediaDetail, Status } from "./api";
+import type { AlbumInfo, Albums, CGroup, CItem, CleanupReport, DirAlbum, FolderInfo, MediaDetail, SmartAlbum, Status } from "./api";
 
 type Item = { id: number; ar: number; taken: number; kind: number; fav: number; dur: number; dir: string; cam: number };
 
@@ -48,7 +48,7 @@ export function createMock() {
   const trashed = new Set<number>();
   const listeners = new Map<string, Set<(p: unknown) => void>>();
   const emit = (ev: string, p?: unknown) => listeners.get(ev)?.forEach((f) => f(p));
-  const status: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0 };
+  const status: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0, analyzing: false, analysisPending: 0 };
   let folders: FolderInfo[] = [{ id: 1, path: ROOT, count: items.length, photos: 0, videos: 0, bytes: 9.4e9, lastScan: Date.now() }];
   const live = () => items.filter((x) => !trashed.has(x.id));
   const byId = new Map(items.map((x) => [x.id, x]));
@@ -162,6 +162,51 @@ export function createMock() {
     },
     reveal: () => undefined,
     open_external: () => undefined,
+    smart_albums: (): SmartAlbum[] => {
+      const L = live();
+      const pick = (f: (x: Item) => boolean) => L.filter(f).map((x) => x.id);
+      const mk = (key: string, kind: SmartAlbum["kind"], title: string, sub: string, ids: number[]): SmartAlbum => ({
+        key, kind, title, sub, ids, covers: ids.filter((id) => !byId.get(id)!.kind).slice(0, 3),
+      });
+      return [
+        mk("trip:kyoto", "trip", "Kyoto", "Oct 3–9, 2026 · Japan", pick((x) => x.dir.includes("Kyoto"))),
+        mk("trip:lisbon", "trip", "Lisbon", "Sep 12–15, 2026 · Portugal", pick((x) => x.dir.includes("Lisbon"))),
+        mk("trip:reykjavik", "trip", "Reykjavík", "Aug 2–8, 2026 · Iceland", pick((x) => x.dir.includes("Iceland"))),
+        mk("smart:favorites", "smart", "Favorites", "Everything you've hearted", pick((x) => !!x.fav)),
+        mk("smart:videos", "smart", "Videos", "Every clip, newest first", pick((x) => x.kind === 1)),
+        mk("smart:panoramas", "smart", "Panoramas", "Extra-wide shots", pick((x) => x.ar > 1.7 && !x.kind)),
+        mk("smart:recent", "smart", "Recently added", "The last 200 files Sitara found", L.slice(0, 200).map((x) => x.id)),
+        mk("place:bengaluru", "place", "Bengaluru", "India · home", pick((x) => x.dir.includes("Family"))),
+        mk("place:mumbai", "place", "Mumbai", "India", pick((x) => x.dir.includes("Mumbai"))),
+      ].filter((a) => a.ids.length);
+    },
+    cleanup_scan: (): CleanupReport => {
+      const L = live().filter((x) => !x.kind);
+      const ci = (x: Item, k: number): CItem => ({
+        id: x.id, name: `IMG_${7100 + x.id}${k ? ` (${k})` : ""}.JPG`, dir: x.dir, size: 2.4e6 + (x.id % 9) * 4e5,
+        w: W(x), h: H(x), taken: x.taken, fav: !!x.fav, sharp: 40 + ((x.id * 37) % 400), luma: 70 + ((x.id * 13) % 110), clip: (x.id % 5) / 100,
+      });
+      const similar: CGroup[] = [];
+      for (let k = 0; k + 3 < Math.min(L.length, 90); k += 6) {
+        const items = L.slice(k, k + 3).map((x) => ci(x, 0));
+        similar.push({ kind: "similar", items, best: items.reduce((b, c, i) => (c.sharp > items[b].sharp ? i : b), 0) });
+      }
+      const exact: CGroup[] = [100, 103, 106, 109].map((k) => ({ kind: "exact", items: [ci(L[k], 0), { ...ci(L[k + 1], 1), size: ci(L[k], 0).size }], best: 0 }));
+      const blurry = L.slice(120, 138).map((x) => ({ ...ci(x, 0), sharp: 4 + (x.id % 15) }));
+      const shots = L.slice(140, 152).map((x) => ci(x, 0));
+      const extra = (g: CGroup[]) => g.reduce((a, x) => a + x.items.length - 1, 0);
+      const bytes = (g: CGroup[]) => g.reduce((a, x) => a + x.items.filter((_, i) => i !== x.best).reduce((b, c) => b + c.size, 0), 0);
+      return {
+        exact, similar, blurry, shots,
+        stats: {
+          exactGroups: exact.length, exactExtra: extra(exact), exactBytes: bytes(exact),
+          similarGroups: similar.length, similarExtra: extra(similar), similarBytes: bytes(similar),
+          blurry: blurry.length, blurryBytes: blurry.reduce((a, c) => a + c.size, 0),
+          shots: shots.length, shotsBytes: shots.reduce((a, c) => a + c.size, 0),
+          analyzed: L.length, pending: 0,
+        },
+      };
+    },
   };
   return {
     async call(cmd: string, args: Record<string, unknown>) {

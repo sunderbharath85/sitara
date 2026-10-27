@@ -1,7 +1,7 @@
 //! Background indexer: folder scans, watcher updates and thumbnail pre-generation.
 //! One thread owns indexing writes; a second, lower-throughput pool warms the thumbnail cache.
 
-use crate::{db, meta, thumbs};
+use crate::{analysis, db, meta, thumbs};
 use rayon::prelude::*;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -29,6 +29,8 @@ pub struct Status {
     pub warming: bool,
     pub thumbs_pending: u64,
     pub thumbs_done: u64,
+    pub analyzing: bool,
+    pub analysis_pending: u64,
 }
 
 pub struct Indexer {
@@ -224,8 +226,9 @@ fn ingest(ctx: &Ctx, conn: &mut Connection, todo: Vec<Found>) -> rusqlite::Resul
                    width=excluded.width, height=excluded.height, taken=excluded.taken, duration=excluded.duration,
                    make=excluded.make, model=excluded.model, lens=excluded.lens, fnumber=excluded.fnumber,
                    exposure=excluded.exposure, iso=excluded.iso, focal=excluded.focal, lat=excluded.lat,
-                   lon=excluded.lon, thumb=0, trashed=0",
+                   lon=excluded.lon, thumb=0, trashed=0, chash=NULL",
             )?;
+            let mut stale = tx.prepare_cached("DELETE FROM analysis WHERE media_id=?1")?;
             for (f, m) in chunk.iter().zip(&metas) {
                 let dir = f.path.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
                 let name = f.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -254,6 +257,7 @@ fn ingest(ctx: &Ctx, conn: &mut Connection, todo: Vec<Found>) -> rusqlite::Resul
                 ])?;
                 if let Some(id) = f.prev {
                     thumbs::forget(&ctx.cache, id);
+                    stale.execute([id])?;
                 }
             }
         }
@@ -426,6 +430,65 @@ fn warmer_loop(ctx: Ctx, db_path: PathBuf, rx: Receiver<()>) {
             s.warming = false;
             s.thumbs_pending = 0;
         });
+        analyze_pending(&ctx, &conn, &pool);
+    }
+}
+
+/// Compute dHash, sharpness and exposure for photos whose thumbnail is cached.
+fn analyze_pending(ctx: &Ctx, conn: &Connection, pool: &rayon::ThreadPool) {
+    const PENDING: &str = "FROM media m WHERE m.kind=0 AND m.trashed=0 AND m.thumb=1
+                           AND NOT EXISTS (SELECT 1 FROM analysis a WHERE a.media_id=m.id)";
+    let mut done_any = false;
+    loop {
+        let pending: u64 =
+            conn.query_row(&format!("SELECT COUNT(*) {PENDING}"), [], |r| r.get::<_, i64>(0)).unwrap_or(0) as u64;
+        if pending == 0 {
+            break;
+        }
+        ctx.update(false, |s| {
+            s.analyzing = true;
+            s.analysis_pending = pending;
+        });
+        let ids = db::ids(conn, &format!("SELECT m.id {PENDING} ORDER BY m.taken DESC LIMIT 256"), []).unwrap_or_default();
+        if ids.is_empty() {
+            break;
+        }
+        let cache = ctx.cache.clone();
+        let results: Vec<(i64, Option<analysis::Analysis>)> = pool.install(|| {
+            ids.par_iter()
+                .map(|&id| {
+                    let a = std::fs::read(thumbs::cache_file(&cache, id, thumbs::Mode::Thumb))
+                        .ok()
+                        .and_then(|b| analysis::from_jpeg(&b));
+                    (id, a)
+                })
+                .collect()
+        });
+        let ok = (|| -> rusqlite::Result<()> {
+            let tx = conn.unchecked_transaction()?;
+            {
+                let mut st = tx.prepare_cached(
+                    "INSERT OR REPLACE INTO analysis(media_id, dhash, sharp, luma, contrast, clip) VALUES(?1,?2,?3,?4,?5,?6)",
+                )?;
+                for (id, a) in &results {
+                    // unreadable thumbnails get a sentinel row so they aren't retried every pass
+                    let a = a.unwrap_or(analysis::Analysis { dhash: 0, sharp: -1.0, luma: 0.0, contrast: 0.0, clip: 0.0 });
+                    st.execute(params![id, a.dhash, a.sharp, a.luma, a.contrast, a.clip])?;
+                }
+            }
+            tx.commit()
+        })();
+        if ok.is_err() {
+            break;
+        }
+        done_any = true;
+    }
+    ctx.update(true, |s| {
+        s.analyzing = false;
+        s.analysis_pending = 0;
+    });
+    if done_any {
+        let _ = ctx.app.emit("analysis-changed", ());
     }
 }
 

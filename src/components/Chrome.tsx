@@ -34,6 +34,10 @@ export function TopBar() {
     busy = true;
     k = st.thumbsDone / Math.max(1, st.thumbsDone + st.thumbsPending);
     text = `Thumbnails · ${fmtNum(st.thumbsPending)} to go`;
+  } else if (st.analyzing && st.analysisPending > 0) {
+    busy = true;
+    k = 0.5;
+    text = `Analyzing · ${fmtNum(st.analysisPending)} to go`;
   } else {
     busy = false;
     k = 1;
@@ -66,6 +70,7 @@ export function TopBar() {
 const VIEWS: [View, string, string][] = [
   ["library", "grid", "Library"],
   ["albums", "layers", "Albums"],
+  ["cleanup", "spark", "Cleanup"],
   ["folders", "folder", "Folders"],
 ];
 

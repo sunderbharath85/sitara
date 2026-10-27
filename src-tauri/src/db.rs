@@ -54,6 +54,19 @@ CREATE TABLE album_items(
 );
 "#;
 
+/// v2: signals for smart albums and cleanup.
+const SCHEMA_V2: &str = r#"
+ALTER TABLE media ADD COLUMN chash TEXT;       -- blake3 of the file, computed only for same-size candidates
+CREATE TABLE analysis(
+  media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+  dhash    INTEGER NOT NULL,                  -- 64-bit difference hash of the thumbnail
+  sharp    REAL NOT NULL,                     -- variance of Laplacian; -1 when the thumbnail couldn't be read
+  luma     REAL NOT NULL,
+  contrast REAL NOT NULL,
+  clip     REAL NOT NULL
+);
+"#;
+
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     let c = Connection::open(path)?;
     c.busy_timeout(Duration::from_secs(15))?;
@@ -66,6 +79,9 @@ pub fn migrate(c: &Connection) -> rusqlite::Result<()> {
     let v: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if v < 1 {
         c.execute_batch(&format!("BEGIN; {SCHEMA_V1} PRAGMA user_version=1; COMMIT;"))?;
+    }
+    if v < 2 {
+        c.execute_batch(&format!("BEGIN; {SCHEMA_V2} PRAGMA user_version=2; COMMIT;"))?;
     }
     // the undo window for Recycle Bin moves is one session
     c.execute("DELETE FROM media WHERE trashed=1", [])?;
