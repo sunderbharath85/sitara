@@ -1,0 +1,445 @@
+//! Background indexer: folder scans, watcher updates and thumbnail pre-generation.
+//! One thread owns indexing writes; a second, lower-throughput pool warms the thumbnail cache.
+
+use crate::{db, meta, thumbs};
+use rayon::prelude::*;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter};
+use walkdir::WalkDir;
+
+pub enum Job {
+    Scan(i64),
+    ScanAll,
+    Paths(Vec<PathBuf>),
+}
+
+#[derive(Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Status {
+    pub scanning: bool,
+    pub folder: Option<String>,
+    pub found: u64,
+    pub indexed: u64,
+    pub warming: bool,
+    pub thumbs_pending: u64,
+    pub thumbs_done: u64,
+}
+
+pub struct Indexer {
+    pub tx: Sender<Job>,
+    pub status: Arc<Mutex<Status>>,
+}
+
+#[derive(Clone)]
+struct Ctx {
+    app: AppHandle,
+    cache: PathBuf,
+    status: Arc<Mutex<Status>>,
+    last_status: Arc<Mutex<Instant>>,
+    last_change: Arc<Mutex<Instant>>,
+}
+
+impl Ctx {
+    fn update(&self, force: bool, f: impl FnOnce(&mut Status)) {
+        let snap = {
+            let mut s = self.status.lock().unwrap();
+            f(&mut s);
+            s.clone()
+        };
+        let mut last = self.last_status.lock().unwrap();
+        if force || last.elapsed() > Duration::from_millis(150) {
+            *last = Instant::now();
+            let _ = self.app.emit("index-status", snap);
+        }
+    }
+    /// Tell the UI to refetch the library; throttled so a big scan fills the grid progressively.
+    fn changed(&self, force: bool) {
+        let mut last = self.last_change.lock().unwrap();
+        if force || last.elapsed() > Duration::from_millis(900) {
+            *last = Instant::now();
+            let _ = self.app.emit("library-changed", ());
+        }
+    }
+}
+
+pub fn start(app: AppHandle, db_path: PathBuf, cache: PathBuf) -> Indexer {
+    let (tx, rx) = mpsc::channel::<Job>();
+    let (wtx, wrx) = mpsc::channel::<()>();
+    let status = Arc::new(Mutex::new(Status::default()));
+    let long_ago = Instant::now() - Duration::from_secs(60);
+    let ctx = Ctx {
+        app,
+        cache,
+        status: status.clone(),
+        last_status: Arc::new(Mutex::new(long_ago)),
+        last_change: Arc::new(Mutex::new(long_ago)),
+    };
+    {
+        let (ctx, db_path) = (ctx.clone(), db_path.clone());
+        std::thread::Builder::new()
+            .name("indexer".into())
+            .spawn(move || indexer_loop(ctx, db_path, rx, wtx))
+            .expect("spawn indexer");
+    }
+    std::thread::Builder::new()
+        .name("thumb-warmer".into())
+        .spawn(move || warmer_loop(ctx, db_path, wrx))
+        .expect("spawn warmer");
+    Indexer { tx, status }
+}
+
+fn indexer_loop(ctx: Ctx, db_path: PathBuf, rx: Receiver<Job>, warm: Sender<()>) {
+    let mut conn = match db::open(&db_path) {
+        Ok(c) => c,
+        Err(e) => return eprintln!("indexer: cannot open db: {e}"),
+    };
+    let _ = warm.send(());
+    while let Ok(first) = rx.recv() {
+        // coalesce whatever queued up while we were busy
+        let mut all = false;
+        let mut folders: Vec<i64> = vec![];
+        let mut paths: Vec<PathBuf> = vec![];
+        for job in std::iter::once(first).chain(rx.try_iter()) {
+            match job {
+                Job::ScanAll => all = true,
+                Job::Scan(id) => folders.push(id),
+                Job::Paths(p) => paths.extend(p),
+            }
+        }
+        if all {
+            folders = db::folder_roots(&conn).map(|r| r.into_iter().map(|(id, _)| id).collect()).unwrap_or_default();
+        }
+        folders.sort_unstable();
+        folders.dedup();
+        if !folders.is_empty() {
+            ctx.update(true, |s| {
+                s.scanning = true;
+                s.found = 0;
+                s.indexed = 0;
+            });
+            for id in folders {
+                let root: Option<String> =
+                    conn.query_row("SELECT path FROM folders WHERE id=?1", [id], |r| r.get(0)).optional().ok().flatten();
+                if let Some(root) = root {
+                    if let Err(e) = scan_folder(&ctx, &mut conn, id, Path::new(&root)) {
+                        eprintln!("scan {root}: {e}");
+                    }
+                }
+            }
+            ctx.update(true, |s| {
+                s.scanning = false;
+                s.folder = None;
+            });
+        }
+        if !paths.is_empty() {
+            paths.sort();
+            paths.dedup();
+            if let Err(e) = apply_paths(&ctx, &mut conn, paths) {
+                eprintln!("watch update: {e}");
+            }
+        }
+        ctx.changed(true);
+        let _ = warm.send(());
+    }
+}
+
+fn skip_dir(e: &walkdir::DirEntry) -> bool {
+    if e.depth() == 0 || !e.file_type().is_dir() {
+        return false;
+    }
+    let n = e.file_name().to_string_lossy();
+    n.starts_with('.')
+        || n.eq_ignore_ascii_case("$RECYCLE.BIN")
+        || n.eq_ignore_ascii_case("System Volume Information")
+        || n == "node_modules"
+        || n == "@eaDir"
+}
+
+struct Found {
+    folder: i64,
+    path: PathBuf,
+    kind: i64,
+    ext: String,
+    size: i64,
+    mtime: i64,
+    prev: Option<i64>,
+}
+
+fn mtime_ms(md: &std::fs::Metadata) -> i64 {
+    md.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Collect media files under `dir`, skipping ones whose size and mtime are unchanged.
+fn collect(
+    ctx: &Ctx,
+    dir: &Path,
+    folder: i64,
+    known: &HashMap<String, (i64, i64, i64)>,
+    seen: &mut HashSet<i64>,
+    todo: &mut Vec<Found>,
+) {
+    for entry in WalkDir::new(dir).follow_links(false).into_iter().filter_entry(|e| !skip_dir(e)).flatten() {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let p = entry.path();
+        let Some(ext) = meta::ext_of(p) else { continue };
+        let Some(kind) = meta::kind_of(&ext) else { continue };
+        let Ok(md) = entry.metadata() else { continue };
+        let (size, mtime) = (md.len() as i64, mtime_ms(&md));
+        ctx.update(false, |s| s.found += 1);
+        let prev = known.get(p.to_string_lossy().as_ref()).copied();
+        if let Some((id, s0, m0)) = prev {
+            seen.insert(id);
+            if s0 == size && m0 == mtime {
+                continue;
+            }
+        }
+        todo.push(Found { folder, path: p.to_path_buf(), kind, ext, size, mtime, prev: prev.map(|p| p.0) });
+    }
+}
+
+/// Read metadata in parallel and write in batches; each batch is visible to the UI immediately.
+fn ingest(ctx: &Ctx, conn: &mut Connection, todo: Vec<Found>) -> rusqlite::Result<()> {
+    for chunk in todo.chunks(256) {
+        let metas: Vec<meta::Meta> = chunk.par_iter().map(|f| meta::read(&f.path, f.kind, f.mtime)).collect();
+        let tx = conn.transaction()?;
+        {
+            let mut st = tx.prepare_cached(
+                "INSERT INTO media(folder_id,path,dir,name,ext,kind,size,mtime,width,height,taken,duration,
+                                   make,model,lens,fnumber,exposure,iso,focal,lat,lon)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
+                 ON CONFLICT(path) DO UPDATE SET folder_id=excluded.folder_id, dir=excluded.dir, name=excluded.name,
+                   ext=excluded.ext, kind=excluded.kind, size=excluded.size, mtime=excluded.mtime,
+                   width=excluded.width, height=excluded.height, taken=excluded.taken, duration=excluded.duration,
+                   make=excluded.make, model=excluded.model, lens=excluded.lens, fnumber=excluded.fnumber,
+                   exposure=excluded.exposure, iso=excluded.iso, focal=excluded.focal, lat=excluded.lat,
+                   lon=excluded.lon, thumb=0, trashed=0",
+            )?;
+            for (f, m) in chunk.iter().zip(&metas) {
+                let dir = f.path.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                let name = f.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                st.execute(params![
+                    f.folder,
+                    f.path.to_string_lossy(),
+                    dir,
+                    name,
+                    f.ext,
+                    f.kind,
+                    f.size,
+                    f.mtime,
+                    m.width,
+                    m.height,
+                    m.taken.unwrap_or(0),
+                    m.duration,
+                    m.make,
+                    m.model,
+                    m.lens,
+                    m.fnumber,
+                    m.exposure,
+                    m.iso,
+                    m.focal,
+                    m.lat,
+                    m.lon
+                ])?;
+                if let Some(id) = f.prev {
+                    thumbs::forget(&ctx.cache, id);
+                }
+            }
+        }
+        tx.commit()?;
+        ctx.update(false, |s| s.indexed += chunk.len() as u64);
+        ctx.changed(false);
+    }
+    Ok(())
+}
+
+fn remove_ids(ctx: &Ctx, conn: &mut Connection, ids: &[i64]) -> rusqlite::Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    {
+        let mut st = tx.prepare_cached("DELETE FROM media WHERE id=?1")?;
+        for &id in ids {
+            st.execute([id])?;
+        }
+    }
+    tx.commit()?;
+    for &id in ids {
+        thumbs::forget(&ctx.cache, id);
+    }
+    Ok(())
+}
+
+fn scan_folder(ctx: &Ctx, conn: &mut Connection, folder: i64, root: &Path) -> rusqlite::Result<()> {
+    ctx.update(true, |s| s.folder = Some(root.to_string_lossy().into_owned()));
+    let known: HashMap<String, (i64, i64, i64)> = {
+        let mut st = conn.prepare("SELECT path, id, size, mtime FROM media WHERE folder_id=?1 AND trashed=0")?;
+        let rows = st.query_map([folder], |r| Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut seen = HashSet::new();
+    let mut todo = vec![];
+    if root.is_dir() {
+        collect(ctx, root, folder, &known, &mut seen, &mut todo);
+    } else {
+        // drive unplugged or folder moved: keep the library as-is rather than wiping it
+        return Ok(());
+    }
+    // newest files first so the top of the timeline fills in before the archive
+    todo.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    ingest(ctx, conn, todo)?;
+    let gone: Vec<i64> = known.values().map(|v| v.0).filter(|id| !seen.contains(id)).collect();
+    remove_ids(ctx, conn, &gone)?;
+    conn.execute("UPDATE folders SET last_scan=?2 WHERE id=?1", params![folder, db::now_ms()])?;
+    Ok(())
+}
+
+/// Apply file-system changes reported by the watcher.
+fn apply_paths(ctx: &Ctx, conn: &mut Connection, paths: Vec<PathBuf>) -> rusqlite::Result<()> {
+    let roots = db::folder_roots(conn)?;
+    let root_of = |p: &Path| {
+        roots.iter().filter(|(_, r)| p.starts_with(r)).max_by_key(|(_, r)| r.len()).map(|(id, _)| *id)
+    };
+    let mut todo = vec![];
+    let mut gone = vec![];
+    for p in paths {
+        let Some(folder) = root_of(&p) else { continue };
+        if p.is_dir() {
+            let known: HashMap<String, (i64, i64, i64)> = {
+                let prefix = format!("{}{}", p.to_string_lossy(), std::path::MAIN_SEPARATOR);
+                let mut st = conn.prepare_cached(
+                    "SELECT path, id, size, mtime FROM media WHERE trashed=0 AND substr(path,1,?1)=?2",
+                )?;
+                let rows = st.query_map(params![prefix.chars().count() as i64, prefix], |r| {
+                    Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?)))
+                })?;
+                rows.collect::<Result<_, _>>()?
+            };
+            collect(ctx, &p, folder, &known, &mut HashSet::new(), &mut todo);
+        } else if p.is_file() {
+            let Some(ext) = meta::ext_of(&p) else { continue };
+            let Some(kind) = meta::kind_of(&ext) else { continue };
+            let Ok(md) = std::fs::metadata(&p) else { continue };
+            let (size, mtime) = (md.len() as i64, mtime_ms(&md));
+            let prev: Option<(i64, i64, i64)> = conn
+                .query_row("SELECT id, size, mtime FROM media WHERE path=?1", [p.to_string_lossy()], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })
+                .optional()?;
+            if matches!(prev, Some((_, s, m)) if s == size && m == mtime) {
+                continue;
+            }
+            todo.push(Found { folder, path: p, kind, ext, size, mtime, prev: prev.map(|p| p.0) });
+        } else {
+            // deleted or renamed away; a trashed row stays until the session ends so Undo can find it
+            let s = p.to_string_lossy().into_owned();
+            let prefix = format!("{s}{}", std::path::MAIN_SEPARATOR);
+            gone.extend(db::ids(
+                conn,
+                "SELECT id FROM media WHERE trashed=0 AND (path=?1 OR substr(path,1,?2)=?3)",
+                params![s, prefix.chars().count() as i64, prefix],
+            )?);
+        }
+    }
+    ingest(ctx, conn, todo)?;
+    remove_ids(ctx, conn, &gone)
+}
+
+fn warmer_loop(ctx: Ctx, db_path: PathBuf, rx: Receiver<()>) {
+    let conn = match db::open(&db_path) {
+        Ok(c) => c,
+        Err(e) => return eprintln!("warmer: cannot open db: {e}"),
+    };
+    let threads = std::thread::available_parallelism().map(|n| n.get() / 2).unwrap_or(2).max(1);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .thread_name(|i| format!("thumb-{i}"))
+        .build()
+        .expect("thumb pool");
+    let mut collected = false;
+    while rx.recv().is_ok() {
+        while rx.try_recv().is_ok() {}
+        if !collected {
+            collected = true;
+            collect_garbage(&ctx.cache, &conn);
+        }
+        loop {
+            let pending: u64 = conn
+                .query_row("SELECT COUNT(*) FROM media WHERE thumb=0 AND trashed=0", [], |r| r.get::<_, i64>(0))
+                .unwrap_or(0) as u64;
+            if pending == 0 {
+                break;
+            }
+            ctx.update(false, |s| {
+                s.warming = true;
+                s.thumbs_pending = pending;
+            });
+            let batch: Vec<(i64, String, String, i64)> = (|| -> rusqlite::Result<_> {
+                let mut st = conn.prepare_cached(
+                    "SELECT id, path, ext, kind FROM media WHERE thumb=0 AND trashed=0 ORDER BY taken DESC LIMIT 128",
+                )?;
+                let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+                rows.collect()
+            })()
+            .unwrap_or_default();
+            if batch.is_empty() {
+                break;
+            }
+            let cache = ctx.cache.clone();
+            let results: Vec<(i64, i64)> = pool.install(|| {
+                batch
+                    .par_iter()
+                    .map(|(id, path, ext, kind)| {
+                        let file = thumbs::cache_file(&cache, *id, thumbs::Mode::Thumb);
+                        let ok = file.exists()
+                            || thumbs::ensure(&cache, *id, Path::new(path), ext, *kind == db::VIDEO, thumbs::Mode::Thumb)
+                                .is_ok();
+                        (*id, if ok { 1 } else { 2 })
+                    })
+                    .collect()
+            });
+            let _ = (|| -> rusqlite::Result<()> {
+                let tx = conn.unchecked_transaction()?;
+                {
+                    let mut st = tx.prepare_cached("UPDATE media SET thumb=?2 WHERE id=?1")?;
+                    for (id, v) in &results {
+                        st.execute(params![id, v])?;
+                    }
+                }
+                tx.commit()
+            })();
+            ctx.update(false, |s| s.thumbs_done += results.len() as u64);
+        }
+        ctx.update(true, |s| {
+            s.warming = false;
+            s.thumbs_pending = 0;
+        });
+    }
+}
+
+/// Drop cached thumbnails whose media rows no longer exist.
+fn collect_garbage(cache: &Path, conn: &Connection) {
+    let Ok(live) = db::ids(conn, "SELECT id FROM media", []) else { return };
+    let live: HashSet<i64> = live.into_iter().collect();
+    for sub in ["t", "p"] {
+        for e in WalkDir::new(cache.join(sub)).min_depth(2).max_depth(2).into_iter().flatten() {
+            let stem = e.path().file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<i64>().ok());
+            let stale_tmp = e.path().extension().is_some_and(|x| x == "tmp");
+            if stale_tmp || stem.is_some_and(|id| !live.contains(&id)) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}

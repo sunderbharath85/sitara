@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#ff6b3d" stop-opacity=".55"/>
+      <stop offset=".45" stop-color="#ff6b3d" stop-opacity=".12"/>
+      <stop offset="1" stop-color="#ff6b3d" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#17171c"/>
+      <stop offset="1" stop-color="#070708"/>
+    </linearGradient>
+    <linearGradient id="star" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd2bf"/>
+      <stop offset=".55" stop-color="#ff6b3d"/>
+      <stop offset="1" stop-color="#e84a1c"/>
+    </linearGradient>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#bg)"/>
+  <rect x="64.5" y="64.5" width="895" height="895" rx="207.5" fill="none" stroke="#ffffff" stroke-opacity=".08"/>
+  <circle cx="512" cy="512" r="400" fill="url(#glow)"/>
+  <path d="M512 214 C 538 420, 604 486, 810 512 C 604 538, 538 604, 512 810 C 486 604, 420 538, 214 512 C 420 486, 486 420, 512 214 Z" fill="url(#star)"/>
+  <circle cx="512" cy="512" r="38" fill="#fff" fill-opacity=".9"/>
+</svg>

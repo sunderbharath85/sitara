@@ -16,7 +16,7 @@ CREATE TABLE folders(
   last_scan INTEGER
 );
 CREATE TABLE media(
-  id        INTEGER PRIMARY KEY,
+  id        INTEGER PRIMARY KEY AUTOINCREMENT, -- ids key the thumbnail cache, never reuse them
   folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
   path      TEXT NOT NULL UNIQUE,
   dir       TEXT NOT NULL,
@@ -41,7 +41,7 @@ CREATE INDEX media_dir    ON media(dir);
 CREATE INDEX media_folder ON media(folder_id);
 CREATE INDEX media_thumb  ON media(thumb) WHERE thumb = 0;
 CREATE TABLE albums(
-  id         INTEGER PRIMARY KEY,
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
   name       TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -408,4 +408,70 @@ pub fn search(c: &Connection, q: &str) -> rusqlite::Result<Vec<i64>> {
         clauses.join(" AND ")
     );
     ids(c, &sql, rusqlite::params_from_iter(args))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lib() -> Connection {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        migrate(&c).unwrap();
+        c.execute("INSERT INTO folders(path, added_at) VALUES('/pics', 0)", []).unwrap();
+        let rows = [
+            ("/pics/2024 Kyoto/IMG_1.jpg", 0, 1_717_200_000i64, 6000, 4000, None, Some("FUJIFILM")),
+            ("/pics/2024 Kyoto/VID_2.mp4", 1, 1_717_300_000, 1920, 1080, Some(12.4), None),
+            ("/pics/Camera/IMG_3.jpg", 0, 1_640_000_000, 120000, 3000, None, Some("Apple")),
+        ];
+        for (p, kind, taken, w, h, dur, make) in rows {
+            let path = std::path::Path::new(p);
+            c.execute(
+                "INSERT INTO media(folder_id,path,dir,name,ext,kind,size,mtime,width,height,taken,duration,make)
+                 VALUES(1,?1,?2,?3,'jpg',?4,10,1000,?5,?6,?7,?8,?9)",
+                params![p, path.parent().unwrap().to_str(), path.file_name().unwrap().to_str(), kind, w, h, taken, dur, make],
+            )
+            .unwrap();
+        }
+        c
+    }
+
+    #[test]
+    fn library_is_packed_newest_first() {
+        let c = lib();
+        let b = library_bytes(&c).unwrap();
+        assert_eq!(&b[0..4], b"SIT1");
+        assert_eq!(u32::from_le_bytes(b[4..8].try_into().unwrap()), 3);
+        assert_eq!(b.len(), 8 + 3 * 24);
+        let rec = |i: usize| &b[8 + i * 24..8 + (i + 1) * 24];
+        // newest first: the video (taken 1_717_300_000) leads
+        assert_eq!(f64::from_le_bytes(rec(0)[8..16].try_into().unwrap()), 1_717_300_000.0);
+        assert_eq!(rec(0)[20], 1, "kind = video");
+        assert_eq!(u16::from_le_bytes(rec(0)[22..24].try_into().unwrap()), 12, "duration rounded");
+        // a 120000x3000 panorama is scaled into u16 range keeping its ratio
+        let (w, h) = (u16::from_le_bytes(rec(2)[16..18].try_into().unwrap()), u16::from_le_bytes(rec(2)[18..20].try_into().unwrap()));
+        assert_eq!(w, 65535);
+        assert!((w as f64 / h as f64 - 40.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn search_understands_kinds_years_and_text() {
+        let c = lib();
+        assert_eq!(search(&c, "videos").unwrap().len(), 1);
+        assert_eq!(search(&c, "2024").unwrap().len(), 2);
+        assert_eq!(search(&c, "kyoto photos").unwrap().len(), 1);
+        assert_eq!(search(&c, "fujifilm").unwrap().len(), 1);
+        assert_eq!(search(&c, "100%_").unwrap().len(), 0, "LIKE wildcards are escaped");
+        assert_eq!(search(&c, "december").unwrap().len(), 1, "1_640_000_000 is Dec 2021");
+    }
+
+    #[test]
+    fn trashed_rows_are_hidden_then_purged() {
+        let c = lib();
+        c.execute("UPDATE media SET trashed=1 WHERE kind=1", []).unwrap();
+        assert_eq!(u32::from_le_bytes(library_bytes(&c).unwrap()[4..8].try_into().unwrap()), 2);
+        migrate(&c).unwrap(); // next session
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM media", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+    }
 }

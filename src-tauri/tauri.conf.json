@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "sitara",
+  "productName": "Sitara",
   "version": "0.1.0",
   "identifier": "app.sitara.photos",
   "build": {
@@ -12,24 +12,52 @@
   "app": {
     "windows": [
       {
-        "title": "sitara",
-        "width": 800,
-        "height": 600
+        "label": "main",
+        "title": "Sitara",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true,
+        "theme": "Dark",
+        "backgroundColor": "#070708",
+        "dragDropEnabled": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' asset: http://asset.localhost thumb: http://thumb.localhost preview: http://preview.localhost data: blob:; media-src 'self' asset: http://asset.localhost blob:; connect-src ipc: http://ipc.localhost",
+      "devCsp": null,
+      "dangerousDisableAssetCspModification": ["style-src"],
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "category": "Photography",
+    "shortDescription": "Fast, private photo and video gallery",
+    "longDescription": "Sitara indexes the folders you choose and builds a fast timeline of every photo and clip. Everything stays on your device.",
+    "publisher": "Sitara contributors",
+    "copyright": "Copyright © 2026 Sitara contributors. GPL-3.0-or-later.",
+    "license": "GPL-3.0-or-later",
+    "licenseFile": "../LICENSE",
+    "homepage": "https://github.com/sunderbharath85/sitara",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper" },
+      "nsis": { "installMode": "currentUser" }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
   }
 }
