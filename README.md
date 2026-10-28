@@ -59,6 +59,7 @@ Sitara reads the folders you choose, builds one timeline of every photo and clip
   - **Search by meaning:** type "sunset over water" or "birthday cake" and find photos without tags. It uses CLIP, about 155 MB.
   - **People:** faces are found and grouped by person. Name someone once, merge look-alikes, and remove the wrong matches. It uses YuNet + SFace, about 39 MB.
   - Models and the ONNX Runtime download once, from their public sources, and are checked against pinned SHA-256 digests. From then on everything runs offline, and photos never leave the computer. Turning a feature off deletes its models and what it learned.
+  - **Uses your graphics card** when there is one: any DirectX 12 GPU on Windows (NVIDIA, AMD, Intel, Qualcomm) and Core ML on Apple silicon. On an RTX 3060, denoise, upscale, face restoration and subject selection run 10 to 20 times faster than on the processor. Models a GPU can't run stay on the processor, and a switch in Folders keeps all AI on the processor.
   - Available on Windows (x64, Arm), Linux (x64, Arm) and Apple silicon Macs.
 
 ## Keyboard
@@ -126,7 +127,7 @@ How it fits together: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The original
 [GPL-3.0-or-later](LICENSE)
 
 On-device AI, each downloaded only when you turn a feature on:
-- [ONNX Runtime](https://onnxruntime.ai) (MIT)
+- [ONNX Runtime](https://onnxruntime.ai) (MIT), and on Windows its DirectML build with [DirectML](https://github.com/microsoft/DirectML) (MIT)
 - [OpenAI CLIP](https://github.com/openai/CLIP) ViT-B/32 (MIT)
 - [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT) and [SFace](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface) (Apache-2.0)
 - [LaMa](https://github.com/advimman/lama) (Apache-2.0)

@@ -83,6 +83,13 @@ pub fn run() {
                 let (db_path, layers) = (state.db_path.clone(), state.ai.layers.clone());
                 std::thread::spawn(move || ai::gc_layers(&db_path, &layers));
             }
+            // an update may bring a new AI runtime (the GPU build); fetch it if AI features are installed
+            {
+                let wake = state.indexer.wake.clone();
+                state.ai.upgrade(h.clone(), move || {
+                    let _ = wake.send(());
+                });
+            }
             // catch up on changes made while the app was closed
             let _ = state.indexer.tx.send(scan::Job::ScanAll);
             Ok(())
@@ -118,6 +125,7 @@ pub fn run() {
             commands::export_save,
             commands::ai_status,
             commands::ai_install,
+            commands::ai_set_gpu,
             commands::ai_remove,
             commands::ai_search,
             commands::people,

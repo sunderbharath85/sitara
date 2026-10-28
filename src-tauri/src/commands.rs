@@ -411,9 +411,17 @@ pub async fn ai_status(s: State<'_, AppState>) -> R<crate::ai::AiStatus> {
 #[tauri::command]
 pub fn ai_install(app: AppHandle, s: State<'_, AppState>, feature: String) -> R<()> {
     let wake = s.indexer.wake.clone();
-    s.ai.install(app, feature, move || {
+    s.ai.install(app, Some(feature), move || {
         let _ = wake.send(());
     })
+}
+
+/// Run AI on the graphics card, or keep it on the CPU.
+#[tauri::command]
+pub fn ai_set_gpu(app: AppHandle, s: State<'_, AppState>, on: bool) -> R<()> {
+    s.ai.set_gpu(on)?;
+    let _ = app.emit("ai-changed", ());
+    Ok(())
 }
 
 #[tauri::command]

@@ -99,6 +99,7 @@ export function AiCard() {
         })}
       </div>
       <EditingPacks />
+      <Device ai={ai} />
       {dl && (
         <div className={`ai-dl${dl.error ? " err" : ""}`}>
           {dl.error ? (
@@ -126,6 +127,44 @@ function Learn({ ai, learning, pending }: { ai: AiStatus; learning: boolean; pen
     <div className={`ai-learn${learning ? " acc" : ""}`}>
       <b>{learning ? fmtNum(pending) : fmtNum(ai.indexed)}</b>
       <span>{learning ? "photos to learn" : ai.people ? `photos understood · ${fmtNum(ai.faces)} faces` : "photos understood"}</span>
+    </div>
+  );
+}
+
+/** Where the models run: the graphics card when there is one (the user can keep AI on the processor). */
+function Device({ ai }: { ai: AiStatus }) {
+  if (!ai.supported) return null;
+  const gpu = !!ai.gpu && ai.useGpu;
+  return (
+    <div className="ai-device">
+      <Icon n="bolt" s={16} />
+      <span>
+        <b>{gpu ? ai.gpu : "Processor"}</b>
+        <small>
+          {gpu
+            ? "AI runs on the graphics card, often 10 to 20 times faster. Anything it can't run stays on the processor."
+            : ai.gpu
+              ? "AI runs on the processor. The graphics card is much faster."
+              : "AI runs on the processor. No supported graphics card was found."}
+        </small>
+      </span>
+      {ai.gpu && (
+        <label className="switch">
+          <input
+            type="checkbox"
+            checked={ai.useGpu}
+            onChange={async (e) => {
+              try {
+                await api.aiSetGpu(e.target.checked);
+              } catch (err) {
+                toast(String(err));
+              }
+            }}
+          />
+          <i />
+          <span>Use the graphics card</span>
+        </label>
+      )}
     </div>
   );
 }

@@ -114,6 +114,9 @@ export interface AiStatus {
   pending: number;
   faces: number;
   working: boolean;
+  /** The graphics card AI can run on, if there is one. */
+  gpu: string | null;
+  useGpu: boolean;
   packs: AiPack[];
 }
 export interface Person {
@@ -262,6 +265,7 @@ export const api = {
   aiStatus: () => call<AiStatus>("ai_status"),
   aiInstall: (feature: AiPack["key"]) => call<void>("ai_install", { feature }),
   aiRemove: (feature: AiPack["key"]) => call<void>("ai_remove", { feature }),
+  aiSetGpu: (on: boolean) => call<void>("ai_set_gpu", { on }),
   aiSearch: (q: string) => call<number[]>("ai_search", { q }),
   people: () => call<Person[]>("people"),
   personItems: (id: number) => call<number[]>("person_items", { id }),

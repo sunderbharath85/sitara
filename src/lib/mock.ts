@@ -51,7 +51,7 @@ export function createMock() {
   const emit = (ev: string, p?: unknown) => listeners.get(ev)?.forEach((f) => f(p));
   const status: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0, analyzing: false, analysisPending: 0, learning: false, learnPending: 0 };
   const ai: AiStatus = {
-    supported: true, search: false, people: false, searchMb: 154, peopleMb: 38, runtimeMb: 17, download: null, indexed: 0, pending: 0, faces: 0, working: false,
+    supported: true, search: false, people: false, searchMb: 154, peopleMb: 38, runtimeMb: 35, download: null, indexed: 0, pending: 0, faces: 0, working: false, gpu: "NVIDIA GeForce RTX 3060", useGpu: true,
     packs: (
       [["search", 155], ["people", 38], ["erase", 208], ["subject", 114], ["sky", 175], ["denoise", 58], ["upscale", 4], ["depth", 99], ["colorize", 135], ["restore", 340]] as const
     ).map(([key, mb]) => ({ key, on: false, mb })),
@@ -175,6 +175,10 @@ export function createMock() {
     reveal: () => undefined,
     open_external: () => undefined,
     ai_status: () => ({ ...ai }),
+    ai_set_gpu: (a) => {
+      ai.useGpu = !!a.on;
+      emit("ai-changed");
+    },
     ai_install: (a) => {
       const pack = ai.packs.find((p) => p.key === a.feature)!;
       const total = pack.mb + ai.runtimeMb;

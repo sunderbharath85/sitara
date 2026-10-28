@@ -85,9 +85,17 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
 ## On-device AI (stage 4)
 
 - **Nothing ships in the installer.** Turning a feature on (Folders → On-device AI) downloads its pieces into `%LOCALAPPDATA%\app.sitara.photos\models`:
-  - ONNX Runtime 1.31: Microsoft's release library, loaded at runtime with `ort`'s `load-dynamic`. On Windows only the DLL is pulled out of the release zip, using HTTP range requests on its central directory.
+  - ONNX Runtime, loaded at runtime with `ort`'s `load-dynamic`:
+    - Windows: the DirectML build (1.24.4, the last one Microsoft published) and `DirectML.dll` 1.15.4, each pulled out of its NuGet package (a zip) with HTTP range requests on the central directory, into `models\ort-dml`. `DirectML.dll` is loaded by full path before the runtime, because ONNX Runtime asks for it by name and System32 has an older copy. On startup, an older CPU-only runtime is deleted and, if any AI feature is installed, the new one is fetched.
+    - macOS: the 1.31 release, which includes Core ML. Linux: the 1.31 CPU release.
   - The models, from Hugging Face.
   - Every file is checked against a SHA-256 pinned in `ai/mod.rs` before it is used.
+- **GPU** (`ai/gpu.rs`): every model loads through `Ai::load`, which puts it on the graphics card when there is one and the user hasn't turned that off (a `cpu-only` marker in the models folder).
+  - Windows uses DirectML with the high-performance preference; the name shown in Folders comes from DXGI for the same adapter, and software adapters don't count. DirectML runs one graph at a time with its own memory planning, so sessions turn off memory patterns and parallel execution. Sessions already run one at a time behind the engines mutex.
+  - macOS uses Core ML (ML Program format, all compute units).
+  - A model that fails to load on the GPU loads on the CPU. A model that fails while running is reloaded on the CPU, run again, and kept there until restart (`Ai::run_on`).
+  - `gpu::CPU_ONLY` keeps some models on the CPU: int8 CLIP (fast on the CPU already; the image model crashes DirectML, which no fallback can catch), and on Windows LaMa and DDColor, which fail inside DirectML.
+  - On an RTX 3060, against 6 CPU threads: sky 23 ms vs 388 ms, subject 0.8 s vs 8.2 s, depth 147 vs 345 ms, denoise (1024 px) 0.19 vs 4.1 s, upscale (256 px tile) 29 vs 539 ms, face restore 68 ms vs 1.4 s, face embedding 6 vs 21 ms. The outputs match within rounding (`gpu_matches_cpu`, an ignored test).
 - **Learning** runs on the warmer thread after thumbnails and analysis. Each photo is decoded once (the upright original at 1600 px or less; videos use their thumbnail), then used for both passes:
   - **CLIP ViT-B/32** (int8 ONNX) turns it into a 512-d vector, stored as int8 in `clip`.
   - **YuNet** finds faces with five landmarks. Each face is aligned to the ArcFace template with a least-squares similarity transform, and **SFace** turns it into a 128-d vector, stored in `faces` with a box normalized to the upright photo.

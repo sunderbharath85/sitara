@@ -8,6 +8,7 @@ pub mod clip;
 pub mod edit;
 pub mod faces;
 pub mod fetch;
+mod gpu;
 pub mod people;
 
 use crate::{db, thumbs};
@@ -30,54 +31,91 @@ struct Asset {
     member: Option<&'static str>,
 }
 
-const ORT: &str = "https://github.com/microsoft/onnxruntime/releases/download/v1.31.0";
+/// ONNX Runtime's own releases: CPU, and on macOS with Core ML for the GPU.
+#[allow(unused_macros)]
+macro_rules! ort_release {
+    ($f:literal) => {
+        concat!("https://github.com/microsoft/onnxruntime/releases/download/v1.31.0/", $f)
+    };
+}
+/// A NuGet package (a zip), from which one library is fetched by byte range.
+macro_rules! nuget {
+    ($p:literal, $v:literal) => {
+        concat!("https://api.nuget.org/v3-flatcontainer/", $p, "/", $v, "/", $p, ".", $v, ".nupkg")
+    };
+}
 
+// On Windows, the DirectML build of ONNX Runtime (its last release is 1.24.4), which runs on any DirectX 12
+// graphics card and on the CPU when there isn't one, plus DirectML itself. The runtime library comes first.
 #[cfg(all(windows, target_arch = "x86_64"))]
-const RUNTIME: Option<Asset> = Some(Asset {
-    file: "onnxruntime.dll",
-    url: "onnxruntime-win-x64-1.31.0.zip",
-    sha256: "0c42dc4e278f0968fdf9ebf1b1e54a74c657a9942e70803e453c91993451cf4c",
-    size: 17_253_176,
-    member: Some("lib/onnxruntime.dll"),
-});
+const RUNTIME: &[Asset] = &[
+    Asset {
+        file: "ort-dml/onnxruntime.dll",
+        url: nuget!("microsoft.ml.onnxruntime.directml", "1.24.4"),
+        sha256: "e7eedec6a6f26dc39dc948276a75ef6d2bee3fff944d874ceed0bbd3b97bff40",
+        size: 17_328_152,
+        member: Some("runtimes/win-x64/native/onnxruntime.dll"),
+    },
+    Asset {
+        file: "ort-dml/DirectML.dll",
+        url: nuget!("microsoft.ai.directml", "1.15.4"),
+        sha256: "9c9e6d822561c6c41b90e6994b3e8857cf1d66dbfb1e0c4c799c7c89b4e92da1",
+        size: 18_527_776,
+        member: Some("bin/x64-win/DirectML.dll"),
+    },
+];
 #[cfg(all(windows, target_arch = "aarch64"))]
-const RUNTIME: Option<Asset> = Some(Asset {
-    file: "onnxruntime.dll",
-    url: "onnxruntime-win-arm64-1.31.0.zip",
-    sha256: "b6da671624bce049c13c34a3b48b7ddfd1b521dbf07d20e83ff9af4441110641",
-    size: 17_507_640,
-    member: Some("lib/onnxruntime.dll"),
-});
+const RUNTIME: &[Asset] = &[
+    Asset {
+        file: "ort-dml/onnxruntime.dll",
+        url: nuget!("microsoft.ml.onnxruntime.directml", "1.24.4"),
+        sha256: "939fa0be435d253eadd9e394ee94ad6b6ac1878c83b64118bb4bda669eb0e28c",
+        size: 17_546_784,
+        member: Some("runtimes/win-arm64/native/onnxruntime.dll"),
+    },
+    Asset {
+        file: "ort-dml/DirectML.dll",
+        url: nuget!("microsoft.ai.directml", "1.15.4"),
+        sha256: "77b0db83ff903f2323f5caf538499d75af6038bbea23b7959f7d232d9a4ab9d4",
+        size: 18_444_832,
+        member: Some("bin/arm64-win/DirectML.dll"),
+    },
+];
+/// Runtimes earlier versions downloaded (the CPU-only build), deleted on startup.
+#[cfg(windows)]
+const LEGACY: &[&str] = &["onnxruntime.dll"];
+#[cfg(not(windows))]
+const LEGACY: &[&str] = &[];
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-const RUNTIME: Option<Asset> = Some(Asset {
+const RUNTIME: &[Asset] = &[Asset {
     file: "libonnxruntime.so",
-    url: "onnxruntime-linux-x64-1.31.0.tgz",
+    url: ort_release!("onnxruntime-linux-x64-1.31.0.tgz"),
     sha256: "469849977cb60744ea160927e1a3a0643fd4c55c0aff743251c6d293402e334e",
     size: 29_345_384,
     member: Some("lib/libonnxruntime.so.1.31.0"),
-});
+}];
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-const RUNTIME: Option<Asset> = Some(Asset {
+const RUNTIME: &[Asset] = &[Asset {
     file: "libonnxruntime.so",
-    url: "onnxruntime-linux-aarch64-1.31.0.tgz",
+    url: ort_release!("onnxruntime-linux-aarch64-1.31.0.tgz"),
     sha256: "595c7f7a6775f5c7b3d567c3ed94c04f722092575abcc092560f5208a54daf99",
     size: 25_266_408,
     member: Some("lib/libonnxruntime.so.1.31.0"),
-});
+}];
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-const RUNTIME: Option<Asset> = Some(Asset {
+const RUNTIME: &[Asset] = &[Asset {
     file: "libonnxruntime.dylib",
-    url: "onnxruntime-osx-arm64-1.31.0.tgz",
+    url: ort_release!("onnxruntime-osx-arm64-1.31.0.tgz"),
     sha256: "2a50a63e7f41f8d4d551d3ee47248df3864f6540109fce8ad520ca3b51af4b70",
     size: 44_830_288,
     member: Some("lib/libonnxruntime.1.31.0.dylib"),
-});
+}];
 #[cfg(not(any(
     all(windows, any(target_arch = "x86_64", target_arch = "aarch64")),
     all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")),
     all(target_os = "macos", target_arch = "aarch64")
 )))]
-const RUNTIME: Option<Asset> = None;
+const RUNTIME: &[Asset] = &[];
 
 /// OpenAI CLIP ViT-B/32 (MIT), int8-quantized ONNX export.
 const SEARCH: [Asset; 4] = [
@@ -259,18 +297,28 @@ pub struct AiStatus {
     pub pending: i64,
     pub faces: i64,
     pub working: bool,
+    /// The graphics card models can run on, if there is one.
+    pub gpu: Option<String>,
+    /// Whether they do (the user can keep AI on the CPU).
+    pub use_gpu: bool,
     /// Every optional pack (search, people and the editing models), installed or not.
     pub packs: Vec<Pack>,
 }
 
+/// A loaded model, and whether it's on the graphics card.
+struct Model {
+    s: Session,
+    gpu: bool,
+}
+
 #[derive(Default)]
 struct Engines {
-    vision: Option<Session>,
-    text: Option<Session>,
-    det: Option<Session>,
-    rec: Option<Session>,
+    vision: Option<Model>,
+    text: Option<Model>,
+    det: Option<Model>,
+    rec: Option<Model>,
     /// Editing models, loaded on first use and released when the editor closes.
-    edit: std::collections::HashMap<&'static str, Session>,
+    edit: std::collections::HashMap<&'static str, Model>,
 }
 
 pub struct Ai {
@@ -285,6 +333,9 @@ pub struct Ai {
     pub working: AtomicBool,
     /// Normalized int8 CLIP vectors, loaded on first search and refreshed when the count changes.
     index: Mutex<Option<Arc<Index>>>,
+    gpu: Option<String>,
+    /// Models the graphics card failed to run; they stay on the CPU until Sitara restarts.
+    cpu_models: Mutex<std::collections::HashSet<&'static str>>,
 }
 
 pub struct Index {
@@ -304,6 +355,8 @@ impl Ai {
             installing: AtomicBool::new(false),
             working: AtomicBool::new(false),
             index: Mutex::new(None),
+            gpu: gpu::name(),
+            cpu_models: Mutex::new(Default::default()),
         }
     }
 
@@ -311,7 +364,23 @@ impl Ai {
         assets.iter().all(|a| self.dir.join(a.file).is_file())
     }
     fn runtime_ok(&self) -> bool {
-        RUNTIME.as_ref().is_some_and(|r| self.dir.join(r.file).is_file())
+        !RUNTIME.is_empty() && self.has(RUNTIME)
+    }
+    fn use_gpu(&self) -> bool {
+        self.gpu.is_some() && !self.dir.join("cpu-only").exists()
+    }
+
+    /// Run models on the graphics card, or keep them on the CPU. Loaded models reload on next use.
+    pub fn set_gpu(&self, on: bool) -> Result<(), String> {
+        let marker = self.dir.join("cpu-only");
+        if on {
+            let _ = std::fs::remove_file(marker);
+        } else {
+            std::fs::create_dir_all(&self.dir).map_err(es)?;
+            std::fs::write(marker, b"").map_err(es)?;
+        }
+        *self.engines.lock().unwrap() = Engines::default();
+        Ok(())
     }
     pub fn search_on(&self) -> bool {
         self.runtime_ok() && self.has(&SEARCH)
@@ -331,27 +400,45 @@ impl Ai {
         let count = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0);
         let (s, p) = (self.search_on(), self.people_on());
         AiStatus {
-            supported: RUNTIME.is_some(),
+            supported: !RUNTIME.is_empty(),
             search: s,
             people: p,
             search_mb: mb(&SEARCH),
             people_mb: mb(&PEOPLE),
-            runtime_mb: if self.runtime_ok() { 0 } else { RUNTIME.as_ref().map(|r| r.size / 1_000_000).unwrap_or(0) },
+            runtime_mb: if self.runtime_ok() { 0 } else { mb(RUNTIME) },
             download: self.download.lock().unwrap().clone(),
             indexed: count("SELECT COUNT(*) FROM ai_done WHERE clip=1 OR faces=1"),
             pending: if s || p { count(&pending_sql(s, p, true)) } else { 0 },
             faces: count("SELECT COUNT(*) FROM faces"),
             working: self.working.load(Ordering::Relaxed),
+            gpu: self.gpu.clone(),
+            use_gpu: self.use_gpu(),
             packs: PACKS.iter().map(|(k, _, a)| Pack { key: k, on: self.pack_on(k), mb: mb(a) }).collect(),
         }
     }
 
     // ---------- install ----------
 
-    /// Download what `feature` needs (a pack key) on a background thread, reporting progress.
-    pub fn install(self: &Arc<Self>, app: AppHandle, feature: String, done: impl FnOnce() + Send + 'static) -> Result<(), String> {
-        let rt = RUNTIME.as_ref().ok_or("On-device AI isn't available for this kind of computer yet.")?;
-        let (name, models) = pack(&feature).ok_or("Unknown AI feature")?;
+    /// After an update: delete runtimes Sitara no longer uses, and if AI features are installed, fetch the current one.
+    pub fn upgrade(self: &Arc<Self>, app: AppHandle, done: impl FnOnce() + Send + 'static) {
+        for f in LEGACY {
+            let _ = std::fs::remove_file(self.dir.join(f));
+        }
+        let installed = PACKS.iter().any(|p| p.2.iter().any(|a| self.dir.join(a.file).is_file()));
+        if installed && !RUNTIME.is_empty() && !self.runtime_ok() {
+            let _ = self.install(app, None, done);
+        }
+    }
+
+    /// Download what `feature` needs (a pack key; `None` for just the runtime) on a background thread, reporting progress.
+    pub fn install(self: &Arc<Self>, app: AppHandle, feature: Option<String>, done: impl FnOnce() + Send + 'static) -> Result<(), String> {
+        if RUNTIME.is_empty() {
+            return Err("On-device AI isn't available for this kind of computer yet.".into());
+        }
+        let (name, models): (&str, &[Asset]) = match &feature {
+            Some(f) => pack(f).ok_or("Unknown AI feature")?,
+            None => ("AI runtime", &[]),
+        };
         if self.installing.swap(true, Ordering::SeqCst) {
             return Err("A download is already running.".into());
         }
@@ -362,8 +449,8 @@ impl Ai {
                 let res = (|| -> Result<(), String> {
                     std::fs::create_dir_all(&me.dir).map_err(es)?;
                     let mut todo: Vec<(&Asset, String)> = vec![];
-                    if !me.runtime_ok() {
-                        todo.push((rt, "AI runtime".into()));
+                    for a in RUNTIME.iter().filter(|a| !me.dir.join(a.file).is_file()) {
+                        todo.push((a, "AI runtime".into()));
                     }
                     for a in models {
                         if !me.dir.join(a.file).is_file() {
@@ -379,6 +466,9 @@ impl Ai {
                         };
                         set(0);
                         let dest = me.dir.join(a.file);
+                        if let Some(p) = dest.parent() {
+                            std::fs::create_dir_all(p).map_err(es)?;
+                        }
                         let last = std::cell::Cell::new(0u64);
                         let progress = |d: u64, _t: u64| {
                             if d - last.get() > 512 * 1024 || d >= a.size {
@@ -387,8 +477,8 @@ impl Ai {
                             }
                         };
                         match a.member {
-                            Some(m) if a.url.ends_with(".zip") => fetch::zip_member(&format!("{ORT}/{}", a.url), m, &dest, a.sha256, &progress)?,
-                            Some(m) => fetch::tgz_member(&format!("{ORT}/{}", a.url), m, &dest, a.sha256, &progress)?,
+                            Some(m) if a.url.ends_with(".tgz") => fetch::tgz_member(a.url, m, &dest, a.sha256, &progress)?,
+                            Some(m) => fetch::zip_member(a.url, m, &dest, a.sha256, &progress)?,
                             None => fetch::file(a.url, &dest, a.sha256, &progress)?,
                         }
                         base += a.size;
@@ -445,15 +535,47 @@ impl Ai {
         if let Some(e) = g.as_ref() {
             return Ok(e.clone());
         }
-        let rt = RUNTIME.as_ref().ok_or("unsupported platform")?;
+        let rt = RUNTIME.first().ok_or("unsupported platform")?;
+        #[cfg(windows)]
+        for lib in &RUNTIME[1..] {
+            gpu::preload(&self.dir.join(lib.file));
+        }
         let env = ort::init_from(self.dir.join(rt.file)).map_err(es)?.with_name("sitara").build().map_err(es)?;
         *g = Some(env.clone());
         Ok(env)
     }
 
-    fn session(&self, file: &str) -> Result<Session, String> {
+    /// A model on the graphics card when there is one (and the user hasn't turned that off), else on the CPU.
+    fn load(&self, file: &'static str) -> Result<Model, String> {
+        let (env, model) = (self.env()?, self.dir.join(file));
         let threads = std::thread::available_parallelism().map(|n| n.get() / 2).unwrap_or(2).max(1);
-        Session::builder(&self.env()?).map_err(es)?.with_intra_threads(threads).map_err(es)?.commit_from_file(self.dir.join(file)).map_err(es)
+        if self.use_gpu() && !gpu::CPU_ONLY.contains(&file) && !self.cpu_models.lock().unwrap().contains(file) {
+            match gpu::session(&env, &model, threads) {
+                Ok(s) => return Ok(Model { s, gpu: true }),
+                Err(e) => eprintln!("[ai] {file} runs on the CPU: the graphics card couldn't load it ({e})"),
+            }
+        }
+        let s = Session::builder(&env).map_err(es)?.with_intra_threads(threads).map_err(es)?.commit_from_file(model).map_err(es)?;
+        Ok(Model { s, gpu: false })
+    }
+
+    /// Run `f` on the model in `slot`, loading it first. If the graphics card fails on it, the model moves to
+    /// the CPU and runs again there.
+    fn run_on<T>(&self, slot: &mut Option<Model>, file: &'static str, mut f: impl FnMut(&mut Session) -> Result<T, String>) -> Result<T, String> {
+        if slot.is_none() {
+            *slot = Some(self.load(file)?);
+        }
+        let m = slot.as_mut().unwrap();
+        match f(&mut m.s) {
+            Err(e) if m.gpu => {
+                eprintln!("[ai] {file} failed on the graphics card, moving it to the CPU: {e}");
+                self.cpu_models.lock().unwrap().insert(file);
+                *slot = None;
+                *slot = Some(self.load(file)?);
+                f(&mut slot.as_mut().unwrap().s)
+            }
+            r => r,
+        }
     }
 
     fn tokenizer(&self) -> Result<Arc<clip::Tokenizer>, String> {
@@ -468,14 +590,11 @@ impl Ai {
     pub fn embed_text(&self, q: &str) -> Result<Vec<f32>, String> {
         let ids = self.tokenizer()?.encode(&format!("a photo of {q}."));
         let mut e = self.engines.lock().unwrap();
-        if e.text.is_none() {
-            e.text = Some(self.session("clip-text.onnx")?);
-        }
-        let s = e.text.as_mut().unwrap();
         let n = ids.len();
-        let out = s.run(ort::inputs!["input_ids" => Tensor::from_array(([1usize, n], ids)).map_err(es)?]).map_err(es)?;
-        let (_, v) = out["text_embeds"].try_extract_tensor::<f32>().map_err(es)?;
-        let mut v = v.to_vec();
+        let mut v = self.run_on(&mut e.text, "clip-text.onnx", |s| {
+            let out = s.run(ort::inputs!["input_ids" => Tensor::from_array(([1usize, n], ids.clone())).map_err(es)?]).map_err(es)?;
+            Ok(out["text_embeds"].try_extract_tensor::<f32>().map_err(es)?.1.to_vec())
+        })?;
         clip::normalize(&mut v);
         Ok(v)
     }
@@ -486,12 +605,10 @@ impl Ai {
             clip::pixels(im, &mut px);
         }
         let mut e = self.engines.lock().unwrap();
-        if e.vision.is_none() {
-            e.vision = Some(self.session("clip-vision.onnx")?);
-        }
-        let s = e.vision.as_mut().unwrap();
-        let out = s.run(ort::inputs!["pixel_values" => Tensor::from_array(([imgs.len(), 3, 224, 224], px)).map_err(es)?]).map_err(es)?;
-        let (_, v) = out["image_embeds"].try_extract_tensor::<f32>().map_err(es)?;
+        let v = self.run_on(&mut e.vision, "clip-vision.onnx", |s| {
+            let out = s.run(ort::inputs!["pixel_values" => Tensor::from_array(([imgs.len(), 3, 224, 224], px.clone())).map_err(es)?]).map_err(es)?;
+            Ok(out["image_embeds"].try_extract_tensor::<f32>().map_err(es)?.1.to_vec())
+        })?;
         Ok(v.chunks(clip::DIM)
             .map(|c| {
                 let mut c = c.to_vec();
@@ -509,19 +626,17 @@ impl Ai {
 
     fn detect(&self, img: &RgbImage, min_side: f32) -> Result<Vec<faces::Det>, String> {
         let mut e = self.engines.lock().unwrap();
-        if e.det.is_none() {
-            e.det = Some(self.session("yunet.onnx")?);
-        }
         let (input, scale) = faces::det_input(img);
-        let det = e.det.as_mut().unwrap();
         let s = faces::DET_SIZE as usize;
-        let out = det.run(ort::inputs!["input" => Tensor::from_array(([1usize, 3, s, s], input)).map_err(es)?]).map_err(es)?;
-        let get = |name: &str| -> Result<Vec<f32>, String> { Ok(out[name].try_extract_tensor::<f32>().map_err(es)?.1.to_vec()) };
-        let (c8, c16, c32) = (get("cls_8")?, get("cls_16")?, get("cls_32")?);
-        let (o8, o16, o32) = (get("obj_8")?, get("obj_16")?, get("obj_32")?);
-        let (b8, b16, b32) = (get("bbox_8")?, get("bbox_16")?, get("bbox_32")?);
-        let (k8, k16, k32) = (get("kps_8")?, get("kps_16")?, get("kps_32")?);
-        let found = faces::decode([&c8, &c16, &c32], [&o8, &o16, &o32], [&b8, &b16, &b32], [&k8, &k16, &k32], scale, 0.82);
+        let found = self.run_on(&mut e.det, "yunet.onnx", |det| {
+            let out = det.run(ort::inputs!["input" => Tensor::from_array(([1usize, 3, s, s], input.clone())).map_err(es)?]).map_err(es)?;
+            let get = |name: &str| -> Result<Vec<f32>, String> { Ok(out[name].try_extract_tensor::<f32>().map_err(es)?.1.to_vec()) };
+            let (c8, c16, c32) = (get("cls_8")?, get("cls_16")?, get("cls_32")?);
+            let (o8, o16, o32) = (get("obj_8")?, get("obj_16")?, get("obj_32")?);
+            let (b8, b16, b32) = (get("bbox_8")?, get("bbox_16")?, get("bbox_32")?);
+            let (k8, k16, k32) = (get("kps_8")?, get("kps_16")?, get("kps_32")?);
+            Ok(faces::decode([&c8, &c16, &c32], [&o8, &o16, &o32], [&b8, &b16, &b32], [&k8, &k16, &k32], scale, 0.82))
+        })?;
         Ok(found.into_iter().filter(|d| d.w.min(d.h) >= min_side).take(24).collect())
     }
 
@@ -529,14 +644,12 @@ impl Ai {
     fn faces(&self, img: &RgbImage) -> Result<Vec<(faces::Det, Vec<f32>)>, String> {
         let found = self.faces_raw(img)?;
         let mut e = self.engines.lock().unwrap();
-        if e.rec.is_none() {
-            e.rec = Some(self.session("sface.onnx")?);
-        }
-        let rec = e.rec.as_mut().unwrap();
         let mut res = vec![];
         for d in found {
-            let out = rec.run(ort::inputs!["data" => Tensor::from_array(([1usize, 3, 112, 112], faces::aligned(img, &d))).map_err(es)?]).map_err(es)?;
-            let mut v = out["fc1"].try_extract_tensor::<f32>().map_err(es)?.1.to_vec();
+            let mut v = self.run_on(&mut e.rec, "sface.onnx", |rec| {
+                let out = rec.run(ort::inputs!["data" => Tensor::from_array(([1usize, 3, 112, 112], faces::aligned(img, &d))).map_err(es)?]).map_err(es)?;
+                Ok(out["fc1"].try_extract_tensor::<f32>().map_err(es)?.1.to_vec())
+            })?;
             clip::normalize(&mut v);
             res.push((d, v));
         }

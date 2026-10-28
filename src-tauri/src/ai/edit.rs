@@ -12,16 +12,17 @@ const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
 const STD: [f32; 3] = [0.229, 0.224, 0.225];
 
 impl Ai {
-    fn with_model<T>(&self, key: &str, file: &'static str, f: impl FnOnce(&mut Session) -> Result<T, String>) -> Result<T, String> {
+    fn with_model<T>(&self, key: &str, file: &'static str, f: impl FnMut(&mut Session) -> Result<T, String>) -> Result<T, String> {
         if !self.pack_on(key) {
             return Err("This AI feature isn't downloaded yet.".into());
         }
         let mut e = self.engines.lock().unwrap();
-        if !e.edit.contains_key(file) {
-            let s = self.session(file)?;
-            e.edit.insert(file, s);
+        let mut slot = e.edit.remove(file);
+        let r = self.run_on(&mut slot, file, f);
+        if let Some(m) = slot {
+            e.edit.insert(file, m);
         }
-        f(e.edit.get_mut(file).unwrap())
+        r
     }
 
     /// Free the editing models (the editor closed).
@@ -96,7 +97,7 @@ pub fn inpaint(ai: &Ai, img: &RgbImage, mask: &GrayImage) -> Result<RgbImage, St
         let o = s
             .run(ort::inputs![
                 "image" => Tensor::from_array(([1usize, 3, S as usize, S as usize], chw(&small, |_, v| v))).map_err(es)?,
-                "mask" => Tensor::from_array(([1usize, 1, S as usize, S as usize], mv)).map_err(es)?
+                "mask" => Tensor::from_array(([1usize, 1, S as usize, S as usize], mv.clone())).map_err(es)?
             ])
             .map_err(es)?;
         first_output(&o)
@@ -117,7 +118,7 @@ pub fn subject(ai: &Ai, img: &RgbImage) -> Result<GrayImage, String> {
     let (w, h) = img.dimensions();
     let input = chw(&resize_rgb(img, S, S), |c, v| (v - MEAN[c]) / STD[c]);
     let out = ai.with_model("subject", "birefnet.onnx", |s| {
-        let o = s.run(ort::inputs!["input_image" => Tensor::from_array(([1usize, 3, S as usize, S as usize], input)).map_err(es)?]).map_err(es)?;
+        let o = s.run(ort::inputs!["input_image" => Tensor::from_array(([1usize, 3, S as usize, S as usize], input.clone())).map_err(es)?]).map_err(es)?;
         first_output(&o)
     })?;
     Ok(resize_gray(&gray_of(&out, S, S, |x| 1.0 / (1.0 + (-x).exp())), w, h))
@@ -129,7 +130,7 @@ pub fn sky(ai: &Ai, img: &RgbImage) -> Result<GrayImage, String> {
     let (w, h) = img.dimensions();
     let input = chw(&resize_rgb(img, S, S), |c, v| (v - MEAN[c]) / STD[c]);
     let out = ai.with_model("sky", "skyseg.onnx", |s| {
-        let o = s.run(ort::inputs!["input.1" => Tensor::from_array(([1usize, 3, S as usize, S as usize], input)).map_err(es)?]).map_err(es)?;
+        let o = s.run(ort::inputs!["input.1" => Tensor::from_array(([1usize, 3, S as usize, S as usize], input.clone())).map_err(es)?]).map_err(es)?;
         first_output(&o)
     })?;
     Ok(resize_gray(&gray_of(&out, S, S, |x| x.clamp(0.0, 1.0)), w, h))
@@ -143,7 +144,7 @@ pub fn depth(ai: &Ai, img: &RgbImage) -> Result<GrayImage, String> {
     let (dw, dh) = (snap(w), snap(h));
     let input = chw(&resize_rgb(img, dw, dh), |c, v| (v - MEAN[c]) / STD[c]);
     let out = ai.with_model("depth", "depth.onnx", |s| {
-        let o = s.run(ort::inputs!["pixel_values" => Tensor::from_array(([1usize, 3, dh as usize, dw as usize], input)).map_err(es)?]).map_err(es)?;
+        let o = s.run(ort::inputs!["pixel_values" => Tensor::from_array(([1usize, 3, dh as usize, dw as usize], input.clone())).map_err(es)?]).map_err(es)?;
         first_output(&o)
     })?;
     let (lo, hi) = out.iter().fold((f32::MAX, f32::MIN), |(a, b), &x| (a.min(x), b.max(x)));
@@ -188,7 +189,7 @@ pub fn colorize(ai: &Ai, img: &RgbImage) -> Result<RgbImage, String> {
     });
     let input = chw(&resize_rgb(&gray, S, S), |_, v| v);
     let ab = ai.with_model("colorize", "ddcolor.onnx", |s| {
-        let o = s.run(ort::inputs!["input" => Tensor::from_array(([1usize, 3, S as usize, S as usize], input)).map_err(es)?]).map_err(es)?;
+        let o = s.run(ort::inputs!["input" => Tensor::from_array(([1usize, 3, S as usize, S as usize], input.clone())).map_err(es)?]).map_err(es)?;
         first_output(&o)
     })?;
     let plane = (S * S) as usize;
@@ -267,7 +268,7 @@ pub fn restore_faces(ai: &Ai, img: &RgbImage) -> Result<(RgbImage, usize), Strin
         }
         let input = chw(&crop, |_, v| (v - 0.5) / 0.5);
         let res = ai.with_model("restore", "gfpgan.onnx", |s| {
-            let o = s.run(ort::inputs!["input" => Tensor::from_array(([1usize, 3, 512, 512], input)).map_err(es)?]).map_err(es)?;
+            let o = s.run(ort::inputs!["input" => Tensor::from_array(([1usize, 3, 512, 512], input.clone())).map_err(es)?]).map_err(es)?;
             first_output(&o)
         })?;
         let fixed = RgbImage::from_fn(512, 512, |x, y| {
@@ -427,5 +428,59 @@ mod tests {
         println!("restore {:?} faces={n}", t.elapsed());
         assert!(n >= 1);
         fixed.save(dir.join("out-restored.png")).unwrap();
+    }
+
+    /// Every model on the graphics card and on the CPU: outputs must agree, and the GPU should be faster.
+    #[test]
+    #[ignore]
+    fn gpu_matches_cpu() {
+        let (Ok(m), Ok(f)) = (std::env::var("SITARA_MODELS"), std::env::var("SITARA_FACES")) else { return };
+        let ai = Ai::new(PathBuf::from(m));
+        if ai.gpu.is_none() {
+            return println!("no graphics card");
+        }
+        println!("gpu: {:?}", ai.gpu);
+        let dir = Path::new(&f);
+        let load = |n: &str, s: u32| crate::thumbs::fit(crate::thumbs::decode(&dir.join(n)).unwrap().to_rgb8(), s);
+        let (street, portrait) = (load("street.jpg", 1024), load("obama1.jpg", 512));
+        let gray = image::DynamicImage::ImageRgb8(street.clone()).grayscale().to_rgb8();
+        let mut mask = GrayImage::new(street.width(), street.height());
+        for y in 300..420 {
+            for x in 400..520 {
+                mask.put_pixel(x, y, image::Luma([255]));
+            }
+        }
+        let tile = image::imageops::crop_imm(&street, 0, 0, 256, 256).to_image();
+        let diff = |a: &[u8], b: &[u8]| a.iter().zip(b).map(|(&x, &y)| (x as i32 - y as i32).abs() as f64).sum::<f64>() / a.len() as f64;
+        type Op<'a> = Box<dyn Fn(&Ai) -> Vec<u8> + 'a>;
+        let ops: Vec<(&str, Op)> = vec![
+            ("sky", Box::new(|a| sky(a, &street).unwrap().into_raw())),
+            ("subject", Box::new(|a| subject(a, &portrait).unwrap().into_raw())),
+            ("depth", Box::new(|a| depth(a, &street).unwrap().into_raw())),
+            ("inpaint", Box::new(|a| inpaint(a, &street, &mask).unwrap().into_raw())),
+            ("denoise", Box::new(|a| denoise(a, &street).unwrap().into_raw())),
+            ("upscale", Box::new(|a| upscale(a, &tile).unwrap().into_raw())),
+            ("colorize", Box::new(|a| colorize(a, &gray).unwrap().into_raw())),
+            ("restore", Box::new(|a| restore_faces(a, &portrait).unwrap().0.into_raw())),
+            ("clip", Box::new(|a| a.embed_images(&[&street, &portrait]).unwrap().concat().iter().map(|v| (v * 1000.0 + 128.0).clamp(0.0, 255.0) as u8).collect())),
+            ("text", Box::new(|a| a.embed_text("a dog on the beach").unwrap().iter().map(|v| (v * 1000.0 + 128.0).clamp(0.0, 255.0) as u8).collect())),
+            ("faces", Box::new(|a| a.faces(&portrait).unwrap().iter().flat_map(|(_, v)| v.iter().map(|v| (v * 1000.0 + 128.0).clamp(0.0, 255.0) as u8)).collect())),
+        ];
+        let only = std::env::var("SITARA_ONLY").ok();
+        for (name, op) in ops.iter().filter(|o| only.as_deref().is_none_or(|x| x == o.0)) {
+            let mut out = vec![];
+            for on in [true, false] {
+                ai.set_gpu(on).unwrap();
+                op(&ai); // load and warm up
+                let t = std::time::Instant::now();
+                let r = op(&ai);
+                out.push((r, t.elapsed()));
+            }
+            let d = diff(&out[0].0, &out[1].0);
+            println!("{name:9} gpu {:>8.1?}  cpu {:>8.1?}  mean |diff| {d:.2}", out[0].1, out[1].1);
+            assert_eq!(out[0].0.len(), out[1].0.len(), "{name}: output size");
+        }
+        println!("moved to the CPU: {:?}", ai.cpu_models.lock().unwrap());
+        ai.set_gpu(true).unwrap();
     }
 }
