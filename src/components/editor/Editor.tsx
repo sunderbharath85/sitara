@@ -2,7 +2,7 @@
 // renderer turns it into pixels; saving stores the stack plus a thumbnail and preview of the result.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { drawHist } from "../../lib/analyze";
-import { api, detailCached, forgetDetail, layerUrl, thumbUrl, type Lib, type MediaDetail } from "../../lib/api";
+import { api, detailCached, forgetDetail, isPrivate, layerUrl, setLayerPrivate, thumbUrl, type Lib, type MediaDetail } from "../../lib/api";
 import * as aiops from "../../lib/edit/aiops";
 import { plan } from "../../lib/edit/describe";
 import { basename, fmtSize } from "../../lib/format";
@@ -13,7 +13,7 @@ import { Renderer } from "../../lib/edit/renderer";
 import { loadSource } from "../../lib/edit/source";
 import { clone, defaults, isIdentity, MAX_MASKS, MAX_SPOTS, newId, normalize, summary, type AiMask, type Geo, type Mask, type Pt, type Stack, type Stroke } from "../../lib/edit/stack";
 import { clampPan, layout, type View } from "../../lib/edit/view";
-import { store, useStore } from "../../lib/store";
+import { libOf, store, useStore } from "../../lib/store";
 import { Icon } from "../Icon";
 import { toast } from "../Toasts";
 import { AiPanel, type AiAction } from "./AiPanel";
@@ -47,7 +47,7 @@ let copied: Pick<Stack, "adj" | "curve" | "hsl" | "grade" | "bw" | "look"> | nul
 
 export function Editor() {
   const ed = useStore((s) => s.editor);
-  const lib = useStore((s) => s.lib);
+  const lib = useStore(libOf);
   if (!ed || !lib) return null;
   return <EditorInner key={ed.id} id={ed.id} lib={lib} />;
 }
@@ -166,6 +166,7 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
       setPhase("error");
       return;
     }
+    setLayerPrivate(isPrivate(id));
     (async () => {
       const det = await detailCached(id);
       if (!det) throw new Error("This photo is no longer in the library.");
@@ -193,6 +194,7 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
       ac.abort();
       r?.dispose();
       R.current = null;
+      setLayerPrivate(false);
       api.aiRelease().catch(() => {});
     };
   }, [id, replace]);

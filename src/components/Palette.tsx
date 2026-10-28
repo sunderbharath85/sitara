@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { addFolder, libraryIds, startShow } from "../lib/actions";
 import { fmtMonth, fmtNum, plural } from "../lib/format";
-import { store, useStore } from "../lib/store";
+import { lockNow, openPrivate } from "../lib/private";
+import { libOf, store, useStore } from "../lib/store";
 import { activeGrid } from "./Grid";
 import { Icon } from "./Icon";
 import { toast } from "./Toasts";
@@ -21,16 +22,18 @@ const STRUCTURAL = /^(videos?|clips|photos?|pictures|favou?rites?|loved|\d{4}|ja
 
 export async function runSearch(q: string) {
   try {
-    const ai = store.get().ai;
+    // inside the Private space only text search runs, over private items only
+    const inPrivate = store.get().view === "private";
+    const ai = inPrivate ? null : store.get().ai;
     const structural = q.split(/\s+/).filter(Boolean).every((t) => STRUCTURAL.test(t.replace(/[",“”]/g, "")));
     const [text, meaning] = await Promise.all([
-      api.search(q),
+      api.search(q, inPrivate),
       ai?.search && !structural ? api.aiSearch(q).catch(() => [] as number[]) : Promise.resolve([] as number[]),
     ]);
     // exact name, folder and camera matches first, then photos that match by meaning
     const seen = new Set(text);
     const ids = [...text, ...meaning.filter((id) => !seen.has(id))];
-    store.set({ search: { q, ids, smart: ids.length - text.length }, view: "library", album: null, viewer: null });
+    store.set({ search: { q, ids, smart: ids.length - text.length, private: inPrivate || undefined }, view: inPrivate ? "private" : "library", album: null, viewer: null });
     if (!ids.length) toast(`Nothing matches “${q}”`);
   } catch (e) {
     toast(String(e));
@@ -38,14 +41,15 @@ export async function runSearch(q: string) {
 }
 
 function jumpTo(id: number) {
-  store.set({ view: "library", album: null, search: null });
+  store.set((s) => ({ view: s.view === "private" ? "private" : "library", album: null, search: null }));
   setTimeout(() => activeGrid.reveal(id, true), 120);
 }
 
 export function Palette() {
   const open = useStore((s) => s.palette);
-  const lib = useStore((s) => s.lib);
-  const smartSearch = useStore((s) => !!s.ai?.search);
+  const lib = useStore(libOf);
+  const inPrivate = useStore((s) => s.view === "private");
+  const smartSearch = useStore((s) => !!s.ai?.search && s.view !== "private");
   const [q, setQ] = useState("");
   const [cur, setCur] = useState(0);
   const input = useRef<HTMLInputElement>(null);
@@ -85,12 +89,14 @@ export function Palette() {
     { g: "Actions", t: "Rescan all folders", ic: "refresh", run: () => api.rescan().then(() => toast("Rescanning every folder")) },
     { g: "Show", t: "Favorites", ic: "heart", run: () => runSearch("favorites") },
     { g: "Show", t: "Videos", ic: "video", run: () => runSearch("videos") },
+    ...(inPrivate ? [{ g: "Go to", t: "Lock Private", ic: "lock", hint: "Ctrl L", run: lockNow }] : []),
     { g: "Go to", t: "Library", ic: "grid", hint: "1", run: () => store.set({ view: "library", album: null }) },
     { g: "Go to", t: "Albums", ic: "layers", hint: "2", run: () => store.set({ view: "albums", album: null }) },
     { g: "Go to", t: "Cleanup · duplicates, similar, blurry", ic: "spark", hint: "3", run: () => store.set({ view: "cleanup", album: null }) },
     { g: "Go to", t: "Folders", ic: "folder", hint: "4", run: () => store.set({ view: "folders", album: null }) },
   ];
   const monthCmds: Cmd[] = months.map((m) => ({ g: "Jump to", t: fmtMonth(m.t), ic: "pin", hint: plural(m.n, "item"), run: () => jumpTo(m.id) }));
+  base.push({ g: "Go to", t: "Private", ic: "lock", run: openPrivate });
   let items = base.filter((c) => !ql || `${c.t} ${c.g}`.toLowerCase().includes(ql));
   items = items.concat(ql ? monthCmds.filter((c) => c.t.toLowerCase().includes(ql)).slice(0, 8) : monthCmds.slice(0, 4));
   if (raw) items.unshift({ g: "Search", t: `“${raw}”`, ic: "search", hint: smartSearch ? "by meaning, names, dates" : "names, folders, cameras, dates", ask: true, run: () => runSearch(raw) });

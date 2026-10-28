@@ -67,8 +67,7 @@ const TileView = memo(function TileView({ t, id, ver, kind, dur, fav, edited, se
   );
 });
 
-function SectionHead({ s, rel, onSelect, label }: { s: Section; rel: number; onSelect: () => void; label: string }) {
-  const lib = store.get().lib!;
+function SectionHead({ s, rel, onSelect, label, lib }: { s: Section; rel: number; onSelect: () => void; label: string; lib: Lib }) {
   return (
     <div className="sec-head" style={{ transform: `translateY(${s.y}px)` }}>
       <div
@@ -148,7 +147,7 @@ export function Grid({ lib, order, group, rail, active, label, header, empty, sc
   const [canvasTop, setCanvasTop] = useState(0);
   const sel = useStore((s) => s.sel);
   useStore((s) => s.favVer);
-  const libVer = useStore((s) => s.libVer);
+  const libVer = useStore((s) => s.libVer + s.plibVer);
 
   useLayoutEffect(() => {
     const el = scroller.current!;
@@ -348,6 +347,7 @@ export function Grid({ lib, order, group, rail, active, label, header, empty, sc
               s={s}
               rel={s.y - top}
               label={label}
+              lib={lib}
               onSelect={() => setSel(new Set([...store.get().sel, ...s.items.map((i) => lib.id[i])]))}
             />
           ))}

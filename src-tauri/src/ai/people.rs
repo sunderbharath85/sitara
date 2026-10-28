@@ -217,9 +217,9 @@ pub struct Person {
 pub fn list(c: &Connection) -> rusqlite::Result<Vec<Person>> {
     let mut st = c.prepare(
         "SELECT p.id, p.name, p.hidden, COUNT(DISTINCT f.media_id),
-                (SELECT f2.id FROM faces f2 JOIN media m2 ON m2.id=f2.media_id AND m2.trashed=0
+                (SELECT f2.id FROM faces f2 JOIN media m2 ON m2.id=f2.media_id AND m2.trashed=0 AND m2.private=0
                  WHERE f2.person_id=p.id ORDER BY (f2.id=p.cover) DESC, f2.score * f2.w DESC LIMIT 1)
-         FROM people p JOIN faces f ON f.person_id=p.id JOIN media m ON m.id=f.media_id AND m.trashed=0
+         FROM people p JOIN faces f ON f.person_id=p.id JOIN media m ON m.id=f.media_id AND m.trashed=0 AND m.private=0
          GROUP BY p.id ORDER BY (p.name IS NULL), COUNT(DISTINCT f.media_id) DESC",
     )?;
     let rows = st.query_map([], |r| {
@@ -237,7 +237,7 @@ pub fn list(c: &Connection) -> rusqlite::Result<Vec<Person>> {
 pub fn items(c: &Connection, person: i64) -> rusqlite::Result<Vec<i64>> {
     crate::db::ids(
         c,
-        "SELECT m.id FROM media m WHERE m.trashed=0 AND EXISTS (SELECT 1 FROM faces f WHERE f.media_id=m.id AND f.person_id=?1)
+        "SELECT m.id FROM media m WHERE m.trashed=0 AND m.private=0 AND EXISTS (SELECT 1 FROM faces f WHERE f.media_id=m.id AND f.person_id=?1)
          ORDER BY m.taken DESC, m.id DESC",
         [person],
     )

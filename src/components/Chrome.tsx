@@ -2,8 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { openPicker, setFavorite, startShow, trash, where } from "../lib/actions";
 import { fmtNum, plural } from "../lib/format";
-import { clearSel, store, useStore, type View } from "../lib/store";
+import { clearSel, libOf, store, useStore, type View } from "../lib/store";
 import { Icon } from "./Icon";
+import { PrivateButton } from "./Private";
 import { toast } from "./Toasts";
 
 const HINTS = ["Search “2025”", "Try “videos”", "Try “march 2024”", "Try a camera, like “fujifilm”", "Try a folder name", "Try “favorites”"];
@@ -67,6 +68,7 @@ export function TopBar() {
         </svg>
         <span id="ingest-t">{text}</span>
       </button>
+      <PrivateButton />
     </header>
   );
 }
@@ -94,9 +96,9 @@ export function Dock() {
   }, [view]);
   return (
     <nav id="dock" className="glass" ref={nav}>
-      <span className="ind" style={{ width: ind.w, transform: `translateX(${ind.x}px)` }} />
+      <span className="ind" style={{ width: ind.w, transform: `translateX(${ind.x}px)`, opacity: view === "private" ? 0 : undefined }} />
       {VIEWS.map(([v, ic, label], k) => (
-        <button key={v} data-view={v} className={view === v ? "on" : ""} onClick={() => store.set({ view: v, album: v === "albums" ? store.get().album : null })} title={`${label} (${k + 1})`}>
+        <button key={v} data-view={v} className={view === v ? "on" : ""} onClick={() => store.set((s) => ({ view: v, album: v === "albums" && s.view !== "private" ? s.album : null }))} title={`${label} (${k + 1})`}>
           <Icon n={ic} />
           <em>{label}</em>
         </button>
@@ -109,7 +111,7 @@ export function Tray() {
   const sel = useStore((s) => s.sel);
   const album = useStore((s) => s.album);
   const view = useStore((s) => s.view);
-  const lib = useStore((s) => s.lib);
+  const lib = useStore(libOf);
   useStore((s) => s.favVer);
   const ids = [...sel];
   const allFav = !!lib && ids.length > 0 && ids.every((id) => lib.fav[lib.pos.get(id) ?? -1] === 1);
@@ -202,10 +204,11 @@ export function AlbumPicker() {
   const ids = useStore((s) => s.picker);
   const [albums, setAlbums] = useState<{ id: number; name: string; count: number }[] | null>(null);
   const [name, setName] = useState("");
+  const inPrivate = useStore((s) => s.view === "private");
   useEffect(() => {
     if (!ids) return;
     setName("");
-    api.albums().then((a) => setAlbums(a.manual)).catch(() => setAlbums([]));
+    api.albums(inPrivate).then((a) => setAlbums(a.manual)).catch(() => setAlbums([]));
   }, [ids]);
   useEffect(() => {
     if (!ids) return;
@@ -226,7 +229,7 @@ export function AlbumPicker() {
       label: "Open",
       run: async () => {
         const items = await api.albumItems(albumId);
-        store.set({ viewer: null, view: "albums", album: { kind: "album", id: albumId, title, ids: items } });
+        store.set({ viewer: null, view: inPrivate ? "private" : "albums", album: { kind: "album", id: albumId, title, ids: items } });
       },
     });
   };
@@ -239,7 +242,7 @@ export function AlbumPicker() {
           onSubmit={async (e) => {
             e.preventDefault();
             const n = name.trim() || "Untitled album";
-            const id = await api.albumCreate(n, ids);
+            const id = await api.albumCreate(n, ids, inPrivate);
             done(id, n);
           }}
         >

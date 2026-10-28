@@ -727,7 +727,7 @@ fn pending_sql(search: bool, people: bool, count: bool) -> String {
         need.push("(COALESCE(d.faces,0)=0 AND m.kind=0)");
     }
     format!(
-        "SELECT {} FROM media m LEFT JOIN ai_done d ON d.media_id=m.id WHERE m.trashed=0 AND m.thumb=1 AND ({}) {}",
+        "SELECT {} FROM media m LEFT JOIN ai_done d ON d.media_id=m.id WHERE m.trashed=0 AND m.private=0 AND m.thumb=1 AND ({}) {}",
         if count { "COUNT(*)" } else { "m.id, m.path, m.ext, m.kind" },
         need.join(" OR "),
         if count { "" } else { "ORDER BY m.taken DESC LIMIT 24" }
@@ -899,7 +899,8 @@ pub fn gc_layers(db_path: &Path, layers: &Path) {
     let Ok(dir) = std::fs::read_dir(layers) else { return };
     for e in dir.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if let Some(hash) = name.strip_suffix(".png") {
+        // private photos' layers are sealed
+        if let Some(hash) = name.strip_suffix(".png").or_else(|| name.strip_suffix(".sealed")) {
             if !all.contains(hash) {
                 let _ = std::fs::remove_file(e.path());
             }

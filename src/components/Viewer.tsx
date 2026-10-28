@@ -4,7 +4,7 @@ import { api, detailCached, inTauri, mediaSrc, thumbUrl, type Lib, type MediaDet
 import { openPicker, setFavorite, startShow, trash, where } from "../lib/actions";
 import { aspect } from "../lib/layout";
 import { basename, camera, fmtDay, fmtDur, fmtMonth, fmtNum, fmtSize, fmtTime } from "../lib/format";
-import { store, useStore } from "../lib/store";
+import { libOf, store, useStore } from "../lib/store";
 import { activeGrid } from "./Grid";
 import { Icon } from "./Icon";
 import { toast } from "./Toasts";
@@ -32,7 +32,7 @@ const flipFrom = (from: DOMRect, to: { left: number; top: number; width: number;
 
 export function Viewer() {
   const v = useStore((s) => s.viewer);
-  const lib = useStore((s) => s.lib);
+  const lib = useStore(libOf);
   if (!v || !lib) return null;
   return <ViewerInner v={v} lib={lib} />;
 }

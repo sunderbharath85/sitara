@@ -6,16 +6,18 @@ import { Editor } from "./components/editor/Editor";
 import { FoldersView, Welcome } from "./components/Folders";
 import { activeGrid, Grid } from "./components/Grid";
 import { Palette } from "./components/Palette";
+import { PrivateModals, PrivateView } from "./components/Private";
 import { Slideshow } from "./components/Slideshow";
 import { Toasts } from "./components/Toasts";
 import { Viewer } from "./components/Viewer";
 import { api, type Lib } from "./lib/api";
 import { addFolder, libraryIds, openPicker, reloadFolders, reloadLibrary, setFavorite, startShow, trash } from "./lib/actions";
 import { fmtNum, plural } from "./lib/format";
+import { lockNow, onPrivateChanged, reloadPrivateLibrary, reloadPrivateStatus, watchActivity } from "./lib/private";
 import { clearSel, setSel, store, useStore } from "./lib/store";
 
 function LibraryView({ lib, active }: { lib: Lib; active: boolean }) {
-  const search = useStore((s) => s.search);
+  const search = useStore((s) => (s.search?.private ? null : s.search));
   const st = useStore((s) => s.status);
   const order = useMemo(() => {
     if (search) return search.ids.map((id) => lib.pos.get(id)).filter((i): i is number => i != null);
@@ -53,7 +55,7 @@ function SearchBar() {
   const search = useStore((s) => s.search);
   const view = useStore((s) => s.view);
   return (
-    <div id="searchbar" className={`glass${search && view === "library" ? " on" : ""}`}>
+    <div id="searchbar" className={`glass${search && view === (search.private ? "private" : "library") ? " on" : ""}`}>
       <span className="st">✦</span>
       <b>“{search?.q}”</b>
       <span className="sn">
@@ -71,6 +73,7 @@ export default function App() {
   const folders = useStore((s) => s.folders);
   const selCount = useStore((s) => s.sel.size);
   const viewing = useStore((s) => !!s.viewer || !!s.editor);
+  const unlocked = useStore((s) => s.priv.unlocked);
 
   useEffect(() => {
     reloadLibrary();
@@ -78,6 +81,7 @@ export default function App() {
     api.status().then((status) => store.set({ status })).catch(() => {});
     const loadAi = () => api.aiStatus().then((ai) => store.set({ ai })).catch(() => {});
     loadAi();
+    reloadPrivateStatus().then((p) => void (p?.unlocked && reloadPrivateLibrary()));
     let pending: ReturnType<typeof setTimeout> | null = null;
     const offs = [
       api.onStatus((status) => {
@@ -90,12 +94,15 @@ export default function App() {
         pending = setTimeout(() => {
           pending = null;
           reloadLibrary();
+          reloadPrivateLibrary();
         }, 150);
       }),
+      api.onPrivateChanged(onPrivateChanged),
       api.onDropFolders((paths) => paths.forEach((p) => addFolder(p))),
       api.onAiProgress(loadAi),
       api.onAiChanged(loadAi),
     ];
+    offs.push(watchActivity());
     return () => offs.forEach((f) => f());
   }, []);
 
@@ -105,6 +112,7 @@ export default function App() {
   useEffect(() => {
     document.body.dataset.view = view;
     clearSel();
+    if (view !== "private" && store.get().search?.private) store.set({ search: null });
   }, [view]);
 
   useEffect(() => {
@@ -117,6 +125,11 @@ export default function App() {
         store.set({ palette: !s.palette });
         return;
       }
+      if (mod && k.toLowerCase() === "l" && s.priv.unlocked) {
+        e.preventDefault();
+        lockNow();
+        return;
+      }
       if (s.palette || s.viewer || s.show || s.picker || s.editor) return;
       if ((e.target as HTMLElement).matches?.("input,textarea,select")) return;
       if (document.querySelector(".modal-wrap")) return;
@@ -125,10 +138,10 @@ export default function App() {
         store.set({ palette: true });
       } else if (k === "Escape") {
         if (s.sel.size) clearSel();
-        else if (s.search && s.view === "library") store.set({ search: null });
+        else if (s.search && s.view === (s.search.private ? "private" : "library")) store.set({ search: null });
         else if (s.album) store.set({ album: null });
       } else if (!mod && (k === "1" || k === "2" || k === "3" || k === "4")) {
-        store.set({ view: (["library", "albums", "cleanup", "folders"] as const)[+k - 1], album: k === "2" ? s.album : null });
+        store.set({ view: (["library", "albums", "cleanup", "folders"] as const)[+k - 1], album: k === "2" && s.view !== "private" ? s.album : null });
       } else if (mod && k.toLowerCase() === "a") {
         e.preventDefault();
         setSel(activeGrid.ids());
@@ -175,6 +188,7 @@ export default function App() {
         <section className={`view${view === "folders" ? " on" : ""}`}>
           <FoldersView />
         </section>
+        <section className={`view${view === "private" ? " on" : ""}`}>{unlocked && <PrivateView active={view === "private"} />}</section>
       </main>
       <Dock />
       <Tray />
@@ -183,6 +197,7 @@ export default function App() {
       <Slideshow />
       <Palette />
       <AlbumPicker />
+      <PrivateModals />
       <Toasts />
     </>
   );

@@ -194,8 +194,10 @@ fn collect(
     known: &HashMap<String, (i64, i64, i64)>,
     seen: &mut HashSet<i64>,
     todo: &mut Vec<Found>,
+    excluded: &[String],
 ) {
-    for entry in WalkDir::new(dir).follow_links(false).into_iter().filter_entry(|e| !skip_dir(e)).flatten() {
+    let walk = WalkDir::new(dir).follow_links(false).into_iter();
+    for entry in walk.filter_entry(|e| !skip_dir(e) && !excluded.iter().any(|x| e.path() == Path::new(x))).flatten() {
         if !entry.file_type().is_file() {
             continue;
         }
@@ -218,20 +220,21 @@ fn collect(
 
 /// Read metadata in parallel and write in batches; each batch is visible to the UI immediately.
 fn ingest(ctx: &Ctx, conn: &mut Connection, todo: Vec<Found>) -> rusqlite::Result<()> {
+    let private_dirs = db::private_dirs(conn)?;
     for chunk in todo.chunks(256) {
         let metas: Vec<meta::Meta> = chunk.par_iter().map(|f| meta::read(&f.path, f.kind, f.mtime)).collect();
         let tx = conn.transaction()?;
         {
             let mut st = tx.prepare_cached(
                 "INSERT INTO media(folder_id,path,dir,name,ext,kind,size,mtime,width,height,taken,duration,
-                                   make,model,lens,fnumber,exposure,iso,focal,lat,lon)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
+                                   make,model,lens,fnumber,exposure,iso,focal,lat,lon,private)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
                  ON CONFLICT(path) DO UPDATE SET folder_id=excluded.folder_id, dir=excluded.dir, name=excluded.name,
                    ext=excluded.ext, kind=excluded.kind, size=excluded.size, mtime=excluded.mtime,
                    width=excluded.width, height=excluded.height, taken=excluded.taken, duration=excluded.duration,
                    make=excluded.make, model=excluded.model, lens=excluded.lens, fnumber=excluded.fnumber,
                    exposure=excluded.exposure, iso=excluded.iso, focal=excluded.focal, lat=excluded.lat,
-                   lon=excluded.lon, thumb=0, trashed=0, chash=NULL",
+                   lon=excluded.lon, private=excluded.private, thumb=0, trashed=0, chash=NULL",
             )?;
             let mut stale = tx.prepare_cached("DELETE FROM analysis WHERE media_id=?1")?;
             let mut stale_ai = tx.prepare_cached("DELETE FROM ai_done WHERE media_id=?1")?;
@@ -261,7 +264,8 @@ fn ingest(ctx: &Ctx, conn: &mut Connection, todo: Vec<Found>) -> rusqlite::Resul
                     m.iso,
                     m.focal,
                     m.lat,
-                    m.lon
+                    m.lon,
+                    db::under_any(&private_dirs, &dir)
                 ])?;
                 if let Some(id) = f.prev {
                     thumbs::forget(&ctx.cache, id);
@@ -298,7 +302,9 @@ fn remove_ids(ctx: &Ctx, conn: &mut Connection, ids: &[i64]) -> rusqlite::Result
 }
 
 fn scan_folder(ctx: &Ctx, conn: &mut Connection, folder: i64, root: &Path) -> rusqlite::Result<()> {
-    ctx.update(true, |s| s.folder = Some(root.to_string_lossy().into_owned()));
+    // the status shows which folder is being indexed; a private one isn't named
+    let shown = (!db::under_any(&db::private_dirs(conn)?, &root.to_string_lossy())).then(|| root.to_string_lossy().into_owned());
+    ctx.update(true, |s| s.folder = shown);
     let known: HashMap<String, (i64, i64, i64)> = {
         let mut st = conn.prepare("SELECT path, id, size, mtime FROM media WHERE folder_id=?1 AND trashed=0")?;
         let rows = st.query_map([folder], |r| Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?;
@@ -306,8 +312,9 @@ fn scan_folder(ctx: &Ctx, conn: &mut Connection, folder: i64, root: &Path) -> ru
     };
     let mut seen = HashSet::new();
     let mut todo = vec![];
+    let excluded = db::excluded_dirs(conn)?;
     if root.is_dir() {
-        collect(ctx, root, folder, &known, &mut seen, &mut todo);
+        collect(ctx, root, folder, &known, &mut seen, &mut todo, &excluded);
     } else {
         // drive unplugged or folder moved: keep the library as-is rather than wiping it
         return Ok(());
@@ -324,6 +331,7 @@ fn scan_folder(ctx: &Ctx, conn: &mut Connection, folder: i64, root: &Path) -> ru
 /// Apply file-system changes reported by the watcher.
 fn apply_paths(ctx: &Ctx, conn: &mut Connection, paths: Vec<PathBuf>) -> rusqlite::Result<()> {
     let roots = db::folder_roots(conn)?;
+    let excluded = db::excluded_dirs(conn)?;
     let root_of = |p: &Path| {
         roots.iter().filter(|(_, r)| p.starts_with(r)).max_by_key(|(_, r)| r.len()).map(|(id, _)| *id)
     };
@@ -331,6 +339,9 @@ fn apply_paths(ctx: &Ctx, conn: &mut Connection, paths: Vec<PathBuf>) -> rusqlit
     let mut gone = vec![];
     for p in paths {
         let Some(folder) = root_of(&p) else { continue };
+        if db::under_any(&excluded, &p.to_string_lossy()) {
+            continue;
+        }
         if p.is_dir() {
             let known: HashMap<String, (i64, i64, i64)> = {
                 let prefix = format!("{}{}", p.to_string_lossy(), std::path::MAIN_SEPARATOR);
@@ -342,7 +353,7 @@ fn apply_paths(ctx: &Ctx, conn: &mut Connection, paths: Vec<PathBuf>) -> rusqlit
                 })?;
                 rows.collect::<Result<_, _>>()?
             };
-            collect(ctx, &p, folder, &known, &mut HashSet::new(), &mut todo);
+            collect(ctx, &p, folder, &known, &mut HashSet::new(), &mut todo, &excluded);
         } else if p.is_file() {
             let Some(ext) = meta::ext_of(&p) else { continue };
             let Some(kind) = meta::kind_of(&ext) else { continue };
@@ -390,6 +401,11 @@ fn warmer_loop(ctx: Ctx, db_path: PathBuf, rx: Receiver<()>) {
             collected = true;
             collect_garbage(&ctx.cache, &conn);
         }
+        purge_private(&ctx, &conn);
+        let private = {
+            use tauri::Manager;
+            ctx.app.try_state::<crate::AppState>().map(|s| s.private.clone())
+        };
         loop {
             let pending: u64 = conn
                 .query_row("SELECT COUNT(*) FROM media WHERE thumb=0 AND trashed=0", [], |r| r.get::<_, i64>(0))
@@ -401,11 +417,15 @@ fn warmer_loop(ctx: Ctx, db_path: PathBuf, rx: Receiver<()>) {
                 s.warming = true;
                 s.thumbs_pending = pending;
             });
-            let batch: Vec<(i64, String, String, i64)> = (|| -> rusqlite::Result<_> {
+            // private items wait until the app state (with the Private key) is up
+            let batch: Vec<(i64, String, String, i64, bool)> = (|| -> rusqlite::Result<_> {
                 let mut st = conn.prepare_cached(
-                    "SELECT id, path, ext, kind FROM media WHERE thumb=0 AND trashed=0 ORDER BY taken DESC LIMIT 128",
+                    "SELECT id, path, ext, kind, private FROM media WHERE thumb=0 AND trashed=0 AND (private=0 OR ?1)
+                     ORDER BY taken DESC LIMIT 128",
                 )?;
-                let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+                let rows = st.query_map([private.is_some()], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get::<_, i64>(4)? != 0))
+                })?;
                 rows.collect()
             })()
             .unwrap_or_default();
@@ -416,11 +436,16 @@ fn warmer_loop(ctx: Ctx, db_path: PathBuf, rx: Receiver<()>) {
             let results: Vec<(i64, i64)> = pool.install(|| {
                 batch
                     .par_iter()
-                    .map(|(id, path, ext, kind)| {
+                    .map(|(id, path, ext, kind, is_private)| {
+                        let (src, video) = (Path::new(path), *kind == db::VIDEO);
                         let file = thumbs::cache_file(&cache, *id, thumbs::Mode::Thumb);
-                        let ok = file.exists()
-                            || thumbs::ensure(&cache, *id, Path::new(path), ext, *kind == db::VIDEO, thumbs::Mode::Thumb)
-                                .is_ok();
+                        let ok = match private.as_deref().filter(|_| *is_private) {
+                            Some(p) => {
+                                thumbs::sealed(&file).exists()
+                                    || crate::private::ensure_sealed(p, &cache, *id, src, ext, video, thumbs::Mode::Thumb).is_ok()
+                            }
+                            None => file.exists() || thumbs::ensure(&cache, *id, src, ext, video, thumbs::Mode::Thumb).is_ok(),
+                        };
                         (*id, if ok { 1 } else { 2 })
                     })
                     .collect()
@@ -471,7 +496,7 @@ fn learn_pending(ctx: &Ctx, conn: &Connection, pool: &rayon::ThreadPool) {
 
 /// Compute dHash, sharpness and exposure for photos whose thumbnail is cached.
 fn analyze_pending(ctx: &Ctx, conn: &Connection, pool: &rayon::ThreadPool) {
-    const PENDING: &str = "FROM media m WHERE m.kind=0 AND m.trashed=0 AND m.thumb=1
+    const PENDING: &str = "FROM media m WHERE m.kind=0 AND m.trashed=0 AND m.thumb=1 AND m.private=0
                            AND NOT EXISTS (SELECT 1 FROM analysis a WHERE a.media_id=m.id)";
     let mut done_any = false;
     loop {
@@ -524,6 +549,20 @@ fn analyze_pending(ctx: &Ctx, conn: &Connection, pool: &rayon::ThreadPool) {
     });
     if done_any {
         let _ = ctx.app.emit("analysis-changed", ());
+    }
+}
+
+/// Forget what AI and analysis learned from items that became private (a pass may have been in flight).
+fn purge_private(ctx: &Ctx, conn: &Connection) {
+    match db::purge_private_ai(conn) {
+        Ok(faces) if !faces.is_empty() => {
+            for f in faces {
+                let _ = std::fs::remove_file(thumbs::face_file(&ctx.cache, f));
+            }
+            let _ = ctx.app.emit("ai-changed", ());
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("private: purge AI rows: {e}"),
     }
 }
 

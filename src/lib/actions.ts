@@ -1,7 +1,7 @@
 import { toast } from "../components/Toasts";
 import { api, forgetDetails, inTauri } from "./api";
 import { plural } from "./format";
-import { clearSel, store } from "./store";
+import { clearSel, libOf, store } from "./store";
 
 export async function reloadLibrary() {
   try {
@@ -65,7 +65,7 @@ export async function trash(ids: number[]) {
 }
 
 export async function setFavorite(ids: number[], value: boolean) {
-  const lib = store.get().lib;
+  const lib = libOf(store.get());
   if (!lib || !ids.length) return;
   for (const id of ids) {
     const i = lib.pos.get(id);
@@ -89,7 +89,7 @@ export function startShow(ids: number[], label: string, extra: { start?: number;
 }
 
 export function libraryIds(): number[] {
-  const lib = store.get().lib;
+  const lib = libOf(store.get());
   return lib ? Array.from(lib.id) : [];
 }
 

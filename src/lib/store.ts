@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
-import { EMPTY_STATUS, type AiStatus, type FolderInfo, type Lib, type Status } from "./api";
+import { EMPTY_PRIVATE, EMPTY_STATUS, type AiStatus, type FolderInfo, type Lib, type PrivateStatus, type Status } from "./api";
 
-export type View = "library" | "albums" | "cleanup" | "folders";
+export type View = "library" | "albums" | "cleanup" | "folders" | "private";
 
 /** An album page: a manual album, a folder shown as an album, or a smart album. */
 export interface AlbumPage {
@@ -30,7 +30,8 @@ export interface State {
   selVer: number;
   status: Status;
   folders: FolderInfo[] | null;
-  search: { q: string; ids: number[]; smart: number } | null;
+  /** `private` results belong to the Private space and show only there. */
+  search: { q: string; ids: number[]; smart: number; private?: boolean } | null;
   album: AlbumPage | null;
   viewer: { ids: number[]; idx: number; from?: DOMRect } | null;
   editor: { id: number; from?: DOMRect } | null;
@@ -39,6 +40,12 @@ export interface State {
   picker: number[] | null;
   favVer: number;
   ai: AiStatus | null;
+  /** The Private space's own library; null while Private is locked. */
+  plib: Lib | null;
+  plibVer: number;
+  priv: PrivateStatus;
+  /** The unlock sheet or setup wizard, with what to do once it succeeds. */
+  privUi: { kind: "unlock" | "setup"; then?: () => void } | null;
 }
 
 let state: State = {
@@ -58,6 +65,10 @@ let state: State = {
   picker: null,
   favVer: 0,
   ai: null,
+  plib: null,
+  plibVer: 0,
+  priv: EMPTY_PRIVATE,
+  privUi: null,
 };
 const subs = new Set<() => void>();
 
@@ -85,3 +96,6 @@ export function setSel(ids: Iterable<number>) {
 export function clearSel() {
   if (state.sel.size) setSel([]);
 }
+
+/** The library the screen is showing: the Private space's while it is open, the main one otherwise. */
+export const libOf = (s: State) => (s.view === "private" ? s.plib : s.lib);
