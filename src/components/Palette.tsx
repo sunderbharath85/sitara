@@ -16,10 +16,21 @@ interface Cmd {
   ask?: boolean;
 }
 
+// words the text search understands on its own; a query made only of these skips search by meaning
+const STRUCTURAL = /^(videos?|clips|photos?|pictures|favou?rites?|loved|\d{4}|jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|june?|july?|aug(ust)?|sep(t(ember)?)?|oct(ober)?|nov(ember)?|dec(ember)?)$/i;
+
 export async function runSearch(q: string) {
   try {
-    const ids = await api.search(q);
-    store.set({ search: { q, ids }, view: "library", album: null, viewer: null });
+    const ai = store.get().ai;
+    const structural = q.split(/\s+/).filter(Boolean).every((t) => STRUCTURAL.test(t.replace(/[",“”]/g, "")));
+    const [text, meaning] = await Promise.all([
+      api.search(q),
+      ai?.search && !structural ? api.aiSearch(q).catch(() => [] as number[]) : Promise.resolve([] as number[]),
+    ]);
+    // exact name, folder and camera matches first, then photos that match by meaning
+    const seen = new Set(text);
+    const ids = [...text, ...meaning.filter((id) => !seen.has(id))];
+    store.set({ search: { q, ids, smart: ids.length - text.length }, view: "library", album: null, viewer: null });
     if (!ids.length) toast(`Nothing matches “${q}”`);
   } catch (e) {
     toast(String(e));
@@ -34,6 +45,7 @@ function jumpTo(id: number) {
 export function Palette() {
   const open = useStore((s) => s.palette);
   const lib = useStore((s) => s.lib);
+  const smartSearch = useStore((s) => !!s.ai?.search);
   const [q, setQ] = useState("");
   const [cur, setCur] = useState(0);
   const input = useRef<HTMLInputElement>(null);
@@ -81,7 +93,7 @@ export function Palette() {
   const monthCmds: Cmd[] = months.map((m) => ({ g: "Jump to", t: fmtMonth(m.t), ic: "pin", hint: plural(m.n, "item"), run: () => jumpTo(m.id) }));
   let items = base.filter((c) => !ql || `${c.t} ${c.g}`.toLowerCase().includes(ql));
   items = items.concat(ql ? monthCmds.filter((c) => c.t.toLowerCase().includes(ql)).slice(0, 8) : monthCmds.slice(0, 4));
-  if (raw) items.unshift({ g: "Search", t: `“${raw}”`, ic: "search", hint: "names, folders, cameras, dates", ask: true, run: () => runSearch(raw) });
+  if (raw) items.unshift({ g: "Search", t: `“${raw}”`, ic: "search", hint: smartSearch ? "by meaning, names, dates" : "names, folders, cameras, dates", ask: true, run: () => runSearch(raw) });
 
   const runAt = (k: number) => {
     const c = items[k];

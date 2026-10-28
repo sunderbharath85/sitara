@@ -4,7 +4,7 @@ A fast, private photo and video gallery for Windows, macOS and Linux. Built with
 
 Sitara reads the folders you choose, builds one timeline of every photo and clip, and keeps everything on your device. No account, no upload, no cloud.
 
-> **Status: early development.** The foundation, smart albums, cleanup and the editor work end to end on Windows; macOS and Linux builds run in CI. Expect rough edges.
+> **Status: early development.** The foundation, smart albums, cleanup, the editor and on-device AI work end to end on Windows; macOS and Linux builds run in CI. Expect rough edges.
 
 ## What works today
 
@@ -45,6 +45,11 @@ Sitara reads the folders you choose, builds one timeline of every photo and clip
 - **Albums:** every folder becomes an album automatically; make your own from any selection.
 - **Select and act:** click, Ctrl/Shift-click or lasso to select, then favorite, add to an album, play as a slideshow, or move to the Recycle Bin with **Undo**.
 - **Search** (Ctrl K): file and folder names, cameras, years, months, "videos", "favorites".
+- **On-device AI** (optional, turned on in Folders):
+  - **Search by meaning:** type "sunset over water" or "birthday cake" and find photos without tags. It uses CLIP, about 155 MB.
+  - **People:** faces are found and grouped by person. Name someone once, merge look-alikes, and remove the wrong matches. It uses YuNet + SFace, about 39 MB.
+  - Models and the ONNX Runtime download once, from their public sources, and are checked against pinned SHA-256 digests. From then on everything runs offline, and photos never leave the computer. Turning a feature off deletes its models and what it learned.
+  - Available on Windows (x64, Arm), Linux (x64, Arm) and Apple silicon Macs.
 
 ## Keyboard
 
@@ -71,7 +76,7 @@ Sitara reads the folders you choose, builds one timeline of every photo and clip
 | 1. Foundation ✅ | Indexing and live watching, EXIF, thumbnail cache, timeline, viewer, albums, slideshow, installers |
 | 2. Smart albums + cleanup ✅ | Trips and places, duplicate and blurry-shot finder, safe cleanup |
 | 3. Editor ✅ | Non-destructive essentials, looks, curves, color mixer and grading, masks, healing, RAW, export |
-| 4. On-device AI | Search by words (CLIP), faces and people. Models download on demand and run offline |
+| 4. On-device AI ✅ | Search by meaning (CLIP), faces and people. Models download on demand and run offline |
 | 5. AI editing | To be designed |
 
 ## Develop
@@ -94,10 +99,10 @@ How it fits together: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The original
 
 - **Private:** everything runs locally. The only network request is "Open in OpenStreetMap", and only when you click it.
 - **Non-destructive:** Sitara never writes to your photo folders. Deletes go to the system Recycle Bin or Trash.
-- **Light:** about 35 MB of RAM at idle, a small installer, and heavy AI models only as optional downloads.
+- **Light:** about 35 MB of RAM at idle and a small installer. The AI models and their runtime are optional downloads.
 
 ## License
 
 [GPL-3.0-or-later](LICENSE)
 
-RAW decoding: [rawler](https://github.com/dnglab/dnglab) (LGPL-2.1). Place names: [GeoNames](https://www.geonames.org) cities database, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Rebuild the embedded copy with `scripts/geonames.py`.
+On-device AI: [ONNX Runtime](https://onnxruntime.ai) (MIT), [OpenAI CLIP](https://github.com/openai/CLIP) ViT-B/32 (MIT), [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT) and [SFace](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface) (Apache-2.0), downloaded only when you turn a feature on. RAW decoding: [rawler](https://github.com/dnglab/dnglab) (LGPL-2.1). Place names: [GeoNames](https://www.geonames.org) cities database, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Rebuild the embedded copy with `scripts/geonames.py`.

@@ -38,6 +38,10 @@ export function TopBar() {
     busy = true;
     k = 0.5;
     text = `Analyzing · ${fmtNum(st.analysisPending)} to go`;
+  } else if (st.learning && st.learnPending > 0) {
+    busy = true;
+    k = 0.5;
+    text = `Learning · ${fmtNum(st.learnPending)} to go`;
   } else {
     busy = false;
     k = 1;

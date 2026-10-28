@@ -1,3 +1,4 @@
+mod ai;
 mod analysis;
 mod cleanup;
 mod commands;
@@ -30,6 +31,8 @@ pub struct AppState {
     pub watchers: Mutex<HashMap<i64, watch::Watcher>>,
     /// Concurrent on-demand thumbnail renders.
     pub render_slots: Arc<Semaphore>,
+    /// Optional on-device AI (search by meaning, people).
+    pub ai: Arc<ai::Ai>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -53,6 +56,7 @@ pub fn run() {
             let h = app.handle();
             let data = h.path().app_data_dir()?;
             let cache = h.path().app_cache_dir()?.join("thumbs");
+            let models = h.path().app_local_data_dir()?.join("models");
             std::fs::create_dir_all(&data)?;
             std::fs::create_dir_all(&cache)?;
             let db_path = data.join("library.db");
@@ -68,6 +72,7 @@ pub fn run() {
                 indexer,
                 watchers: Mutex::new(HashMap::new()),
                 render_slots: Arc::new(Semaphore::new(slots)),
+                ai: Arc::new(ai::Ai::new(models)),
             });
             let state = app.state::<AppState>();
             for (id, path) in roots {
@@ -106,6 +111,16 @@ pub fn run() {
             commands::edit_save,
             commands::edit_revert,
             commands::export_save,
+            commands::ai_status,
+            commands::ai_install,
+            commands::ai_remove,
+            commands::ai_search,
+            commands::people,
+            commands::person_items,
+            commands::person_rename,
+            commands::person_merge,
+            commands::person_hide,
+            commands::person_remove,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sitara");

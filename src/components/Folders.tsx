@@ -3,6 +3,7 @@ import { api, type Suggestion } from "../lib/api";
 import { addFolder, reloadFolders } from "../lib/actions";
 import { ago, fmtNum, fmtSize, plural } from "../lib/format";
 import { store, useStore } from "../lib/store";
+import { AiCard } from "./AiCard";
 import { Icon } from "./Icon";
 import { toast } from "./Toasts";
 
@@ -68,6 +69,8 @@ export function FoldersView() {
           <span>{st.scanning ? `indexing ${st.folder?.split(/[\\/]/).pop() ?? ""}` : st.warming ? "thumbnails to render" : "Everything up to date"}</span>
         </div>
       </div>
+
+      <AiCard />
 
       <div className="flist">
         {folders?.map((f) => (

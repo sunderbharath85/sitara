@@ -1,13 +1,15 @@
 import { useSyncExternalStore } from "react";
-import { EMPTY_STATUS, type FolderInfo, type Lib, type Status } from "./api";
+import { EMPTY_STATUS, type AiStatus, type FolderInfo, type Lib, type Status } from "./api";
 
 export type View = "library" | "albums" | "cleanup" | "folders";
 
 /** An album page: a manual album, a folder shown as an album, or a smart album. */
 export interface AlbumPage {
-  kind: "album" | "dir" | "smart";
+  kind: "album" | "dir" | "smart" | "person";
   id?: number;
   dir?: string;
+  /** Person pages: the face shown in the header. */
+  face?: number;
   title: string;
   ids: number[];
 }
@@ -28,7 +30,7 @@ export interface State {
   selVer: number;
   status: Status;
   folders: FolderInfo[] | null;
-  search: { q: string; ids: number[] } | null;
+  search: { q: string; ids: number[]; smart: number } | null;
   album: AlbumPage | null;
   viewer: { ids: number[]; idx: number; from?: DOMRect } | null;
   editor: { id: number; from?: DOMRect } | null;
@@ -36,6 +38,7 @@ export interface State {
   palette: boolean;
   picker: number[] | null;
   favVer: number;
+  ai: AiStatus | null;
 }
 
 let state: State = {
@@ -54,6 +57,7 @@ let state: State = {
   palette: false,
   picker: null,
   favVer: 0,
+  ai: null,
 };
 const subs = new Set<() => void>();
 

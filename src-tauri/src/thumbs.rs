@@ -108,6 +108,32 @@ pub fn render(src: &Path, ext: &str, is_video: bool, mode: Mode) -> Result<Vec<u
     Err(format!("no decoder for .{ext}"))
 }
 
+/// A square portrait around a face (box normalized to the upright photo), cached by face id.
+pub fn face(cache: &Path, face_id: i64, src: &Path, ext: &str, b: [f32; 4]) -> Result<Vec<u8>, String> {
+    let out = cache.join("f").join(format!("{:03}", face_id % 1000)).join(format!("{face_id}.jpg"));
+    if let Ok(bytes) = std::fs::read(&out) {
+        return Ok(bytes);
+    }
+    let img = if rust_decodable(ext) {
+        decode(src)?
+    } else if crate::raw::is_raw(ext) {
+        crate::raw::preview(src)?
+    } else {
+        os_decode(src, PREVIEW_LONG)?
+    };
+    let (w, h) = (img.width() as f32, img.height() as f32);
+    let side = (b[2] * w).max(b[3] * h) * 1.7;
+    let (cx, cy) = ((b[0] + b[2] / 2.0) * w, (b[1] + b[3] / 2.0) * h - 0.05 * side);
+    let side = side.min(w).min(h).max(8.0);
+    let x = (cx - side / 2.0).clamp(0.0, w - side);
+    let y = (cy - side / 2.0).clamp(0.0, h - side);
+    let crop = img.crop_imm(x as u32, y as u32, side as u32, side as u32);
+    let crop = crop.resize_exact(256, 256, image::imageops::FilterType::CatmullRom).to_rgb8();
+    let bytes = encode(&crop)?;
+    write_atomic(&out, &bytes);
+    Ok(bytes)
+}
+
 /// The editor's source pixels, full resolution and upright, as `SRC1` binary:
 /// magic, width u32, height u32, format u32 (0 = RGBA8 sRGB, 1 = RGB10_A2 linear log, see `raw`), then pixels.
 /// Formats the webview decodes itself (JPEG, PNG, WebP…) never come through here.
@@ -170,7 +196,7 @@ fn os_decode(src: &Path, max_side: u32) -> Result<DynamicImage, String> {
     image::load_from_memory(&jpg).map_err(|e| e.to_string())
 }
 
-fn decode(src: &Path) -> Result<DynamicImage, String> {
+pub fn decode(src: &Path) -> Result<DynamicImage, String> {
     let reader = ImageReader::open(src).map_err(|e| e.to_string())?.with_guessed_format().map_err(|e| e.to_string())?;
     let mut dec = reader.into_decoder().map_err(|e| e.to_string())?;
     let orientation = dec.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
@@ -190,6 +216,25 @@ fn resize(src: RgbImage, mode: Mode) -> Result<RgbImage, String> {
     let opts = fr::ResizeOptions::new().resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::CatmullRom));
     fr::Resizer::new().resize(&from, &mut to, &opts).map_err(|e| e.to_string())?;
     RgbImage::from_raw(tw, th, to.into_vec()).ok_or_else(|| "resize buffer".to_string())
+}
+
+/// Downscale so the long side is at most `max` (never upscales).
+pub fn fit(img: RgbImage, max: u32) -> RgbImage {
+    let (w, h) = img.dimensions();
+    if w.max(h) <= max {
+        return img;
+    }
+    let s = max as f64 / w.max(h) as f64;
+    let (tw, th) = (((w as f64 * s).round() as u32).max(1), ((h as f64 * s).round() as u32).max(1));
+    let from = img.clone();
+    (|| -> Option<RgbImage> {
+        let from = fr::images::Image::from_vec_u8(w, h, from.into_raw(), fr::PixelType::U8x3).ok()?;
+        let mut to = fr::images::Image::new(tw, th, fr::PixelType::U8x3);
+        let opts = fr::ResizeOptions::new().resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::Bilinear));
+        fr::Resizer::new().resize(&from, &mut to, &opts).ok()?;
+        RgbImage::from_raw(tw, th, to.into_vec())
+    })()
+    .unwrap_or(img)
 }
 
 fn encode(img: &RgbImage) -> Result<Vec<u8>, String> {

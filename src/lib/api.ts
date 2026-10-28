@@ -67,6 +67,8 @@ export interface Status {
   thumbsDone: number;
   analyzing: boolean;
   analysisPending: number;
+  learning: boolean;
+  learnPending: number;
 }
 
 export interface AlbumInfo {
@@ -93,7 +95,28 @@ export interface Suggestion {
   label: string;
 }
 
-export const EMPTY_STATUS: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0, analyzing: false, analysisPending: 0 };
+export const EMPTY_STATUS: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0, analyzing: false, analysisPending: 0, learning: false, learnPending: 0 };
+
+export interface AiStatus {
+  supported: boolean;
+  search: boolean;
+  people: boolean;
+  searchMb: number;
+  peopleMb: number;
+  runtimeMb: number;
+  download: { label: string; done: number; total: number; error: string | null } | null;
+  indexed: number;
+  pending: number;
+  faces: number;
+  working: boolean;
+}
+export interface Person {
+  id: number;
+  name: string | null;
+  count: number;
+  cover: number; // face id
+  hidden: boolean;
+}
 
 export interface SmartAlbum {
   key: string;
@@ -230,6 +253,26 @@ export const api = {
   openExternal: (id: number) => call<void>("open_external", { id }),
   smartAlbums: () => call<SmartAlbum[]>("smart_albums"),
   cleanupScan: () => call<CleanupReport>("cleanup_scan"),
+  aiStatus: () => call<AiStatus>("ai_status"),
+  aiInstall: (feature: "search" | "people") => call<void>("ai_install", { feature }),
+  aiRemove: (feature: "search" | "people") => call<void>("ai_remove", { feature }),
+  aiSearch: (q: string) => call<number[]>("ai_search", { q }),
+  people: () => call<Person[]>("people"),
+  personItems: (id: number) => call<number[]>("person_items", { id }),
+  personRename: (id: number, name: string) => call<void>("person_rename", { id, name }),
+  personMerge: (from: number, into: number) => call<void>("person_merge", { from, into }),
+  personHide: (id: number, hidden: boolean) => call<void>("person_hide", { id, hidden }),
+  personRemove: (id: number, ids: number[]) => call<void>("person_remove", { id, ids }),
+  onAiProgress(cb: () => void) {
+    if (mock) return mock.on("ai-progress", cb);
+    const un = listen("ai-progress", () => cb());
+    return () => void un.then((f) => f());
+  },
+  onAiChanged(cb: () => void) {
+    if (mock) return mock.on("ai-changed", cb);
+    const un = listen("ai-changed", () => cb());
+    return () => void un.then((f) => f());
+  },
   editLoad: (id: number) => call<string | null>("edit_load", { id }),
   editRevert: (id: number) => call<boolean>("edit_revert", { id }),
   /** Save an edit stack plus the editor's renders (grid thumbnail, large preview). Returns the revision. */
@@ -301,6 +344,9 @@ export const api = {
 
 export const thumbUrl = (id: number, ver: number) =>
   mock ? mock.thumbUrl(id) : `${convertFileSrc(String(id), "thumb")}?v=${ver}`;
+
+/** Square portrait of a detected face. */
+export const faceUrl = (faceId: number) => (mock ? mock.faceUrl(faceId) : `${convertFileSrc("face", "thumb")}/${faceId}`);
 
 /** Full-resolution source for the viewer and slideshow. Edited photos show the editor's render. */
 export function mediaSrc(d: MediaDetail): string {

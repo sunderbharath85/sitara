@@ -56,7 +56,10 @@ function SearchBar() {
     <div id="searchbar" className={`glass${search && view === "library" ? " on" : ""}`}>
       <span className="st">✦</span>
       <b>“{search?.q}”</b>
-      <span className="sn">{search ? plural(search.ids.length, "result") : ""}</span>
+      <span className="sn">
+        {search ? plural(search.ids.length, "result") : ""}
+        {search?.smart ? <em> · ✦ {search.smart} by meaning</em> : null}
+      </span>
       <button onClick={() => store.set({ search: null })}>Clear ✕</button>
     </div>
   );
@@ -73,6 +76,8 @@ export default function App() {
     reloadLibrary();
     reloadFolders();
     api.status().then((status) => store.set({ status })).catch(() => {});
+    const loadAi = () => api.aiStatus().then((ai) => store.set({ ai })).catch(() => {});
+    loadAi();
     let pending: ReturnType<typeof setTimeout> | null = null;
     const offs = [
       api.onStatus((status) => {
@@ -88,6 +93,8 @@ export default function App() {
         }, 150);
       }),
       api.onDropFolders((paths) => paths.forEach((p) => addFolder(p))),
+      api.onAiProgress(loadAi),
+      api.onAiChanged(loadAi),
     ];
     return () => offs.forEach((f) => f());
   }, []);

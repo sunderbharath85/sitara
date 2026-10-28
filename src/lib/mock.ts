@@ -1,6 +1,6 @@
 // In-browser stand-in for the Rust backend so the UI can be developed and tested in a plain browser
 // (`npm run dev`). Loaded only when not running inside Tauri; uses picsum.photos sample images.
-import type { AlbumInfo, Albums, CGroup, CItem, CleanupReport, DirAlbum, FolderInfo, MediaDetail, SmartAlbum, Status } from "./api";
+import type { AiStatus, AlbumInfo, Albums, CGroup, CItem, CleanupReport, DirAlbum, FolderInfo, MediaDetail, Person, SmartAlbum, Status } from "./api";
 
 type Item = { id: number; ar: number; taken: number; kind: number; fav: number; dur: number; dir: string; cam: number };
 
@@ -49,7 +49,10 @@ export function createMock() {
   const edits = new Map<number, { stack: string; w: number; h: number; rev: number; thumb: string; preview: string }>();
   const listeners = new Map<string, Set<(p: unknown) => void>>();
   const emit = (ev: string, p?: unknown) => listeners.get(ev)?.forEach((f) => f(p));
-  const status: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0, analyzing: false, analysisPending: 0 };
+  const status: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0, analyzing: false, analysisPending: 0, learning: false, learnPending: 0 };
+  const ai: AiStatus = { supported: true, search: false, people: false, searchMb: 154, peopleMb: 38, runtimeMb: 17, download: null, indexed: 0, pending: 0, faces: 0, working: false };
+  // people are faked from photo ids: a "face id" is the photo it was found in
+  const people: (Person & { ids: number[] })[] = [];
   let folders: FolderInfo[] = [{ id: 1, path: ROOT, count: items.length, photos: 0, videos: 0, bytes: 9.4e9, lastScan: Date.now() }];
   const live = () => items.filter((x) => !trashed.has(x.id));
   const byId = new Map(items.map((x) => [x.id, x]));
@@ -165,6 +168,69 @@ export function createMock() {
     },
     reveal: () => undefined,
     open_external: () => undefined,
+    ai_status: () => ({ ...ai }),
+    ai_install: (a) => {
+      const total = (a.feature === "people" ? ai.peopleMb : ai.searchMb) + ai.runtimeMb;
+      let done = 0;
+      const iv = setInterval(() => {
+        done = Math.min(total, done + total / 14);
+        ai.download = { label: done < ai.runtimeMb ? "AI runtime" : a.feature === "people" ? "Face models" : "Search model", done: done * 1e6, total: total * 1e6, error: null };
+        emit("ai-progress");
+        if (done >= total) {
+          clearInterval(iv);
+          ai.download = null;
+          ai.runtimeMb = 0;
+          if (a.feature === "people") {
+            ai.people = true;
+            const L = live().filter((x) => !x.kind);
+            for (const [k, name] of [[0, "Asha"], [1, null], [2, "Ravi"], [3, null], [4, null]] as const) {
+              const ids = L.filter((_, i) => i % (k + 5) === k).map((x) => x.id).slice(0, 40 - k * 6);
+              people.push({ id: k + 1, name, count: ids.length, cover: ids[0], hidden: false, ids });
+            }
+            ai.faces = people.reduce((n, p) => n + p.count, 0);
+          } else ai.search = true;
+          ai.indexed = live().length;
+          emit("ai-progress");
+          emit("ai-changed");
+        }
+      }, 160);
+    },
+    ai_remove: (a) => {
+      if (a.feature === "people") {
+        ai.people = false;
+        people.length = 0;
+      } else ai.search = false;
+      emit("ai-changed");
+    },
+    ai_search: (a) => {
+      // stand-in for meaning: a stable pseudo-random pick per query
+      let h = 0;
+      for (const ch of String(a.q)) h = (h * 31 + ch.charCodeAt(0)) | 0;
+      return live().filter((x) => !x.kind && ((x.id * 2654435761) ^ h) % 9 === 0).slice(0, 60).map((x) => x.id);
+    },
+    people: () => people.map(({ ids, ...p }) => ({ ...p, count: ids.filter((i) => !trashed.has(i)).length })),
+    person_items: (a) => people.find((p) => p.id === a.id)?.ids.filter((i) => !trashed.has(i)) ?? [],
+    person_rename: (a) => {
+      people.find((p) => p.id === a.id)!.name = a.name || null;
+      emit("ai-changed");
+    },
+    person_merge: (a) => {
+      const from = people.find((p) => p.id === a.from)!,
+        into = people.find((p) => p.id === a.into)!;
+      into.ids = [...new Set([...into.ids, ...from.ids])];
+      into.name ??= from.name;
+      people.splice(people.indexOf(from), 1);
+      emit("ai-changed");
+    },
+    person_hide: (a) => {
+      people.find((p) => p.id === a.id)!.hidden = a.hidden;
+      emit("ai-changed");
+    },
+    person_remove: (a) => {
+      const p = people.find((x) => x.id === a.id)!;
+      p.ids = p.ids.filter((i) => !a.ids.includes(i));
+      emit("ai-changed");
+    },
     edit_load: (a) => edits.get(a.id)?.stack ?? null,
     edit_revert: (a) => {
       const had = edits.delete(a.id);
@@ -254,6 +320,7 @@ export function createMock() {
       const ar = x?.ar ?? 1.5;
       return `https://picsum.photos/seed/s${id}/${Math.round(360 * ar)}/360`;
     },
+    faceUrl: (faceId: number) => `https://picsum.photos/seed/s${faceId}/240/240`,
     fullUrl: (id: number) => edits.get(id)?.preview ?? original(id),
     originalUrl: (id: number) => original(id),
   };

@@ -2,3 +2,7 @@
 # at near-release speed while our own crate stays fast to compile and debug.
 [profile.dev.package."*"]
 opt-level = 3
+
+# Our crate gets light optimization too: the AI and pixel loops are ~10x slower at opt-level 0.
+[profile.dev]
+opt-level = 1

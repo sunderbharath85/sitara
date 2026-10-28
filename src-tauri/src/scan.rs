@@ -31,11 +31,15 @@ pub struct Status {
     pub thumbs_done: u64,
     pub analyzing: bool,
     pub analysis_pending: u64,
+    pub learning: bool,
+    pub learn_pending: u64,
 }
 
 pub struct Indexer {
     pub tx: Sender<Job>,
     pub status: Arc<Mutex<Status>>,
+    /// Nudge the warmer (thumbnails, analysis, AI) to look for work.
+    pub wake: Sender<()>,
 }
 
 #[derive(Clone)]
@@ -82,6 +86,7 @@ pub fn start(app: AppHandle, db_path: PathBuf, cache: PathBuf) -> Indexer {
         last_status: Arc::new(Mutex::new(long_ago)),
         last_change: Arc::new(Mutex::new(long_ago)),
     };
+    let wake = wtx.clone();
     {
         let (ctx, db_path) = (ctx.clone(), db_path.clone());
         std::thread::Builder::new()
@@ -93,7 +98,7 @@ pub fn start(app: AppHandle, db_path: PathBuf, cache: PathBuf) -> Indexer {
         .name("thumb-warmer".into())
         .spawn(move || warmer_loop(ctx, db_path, wrx))
         .expect("spawn warmer");
-    Indexer { tx, status }
+    Indexer { tx, status, wake }
 }
 
 fn indexer_loop(ctx: Ctx, db_path: PathBuf, rx: Receiver<Job>, warm: Sender<()>) {
@@ -229,6 +234,9 @@ fn ingest(ctx: &Ctx, conn: &mut Connection, todo: Vec<Found>) -> rusqlite::Resul
                    lon=excluded.lon, thumb=0, trashed=0, chash=NULL",
             )?;
             let mut stale = tx.prepare_cached("DELETE FROM analysis WHERE media_id=?1")?;
+            let mut stale_ai = tx.prepare_cached("DELETE FROM ai_done WHERE media_id=?1")?;
+            let mut stale_clip = tx.prepare_cached("DELETE FROM clip WHERE media_id=?1")?;
+            let mut stale_faces = tx.prepare_cached("DELETE FROM faces WHERE media_id=?1")?;
             for (f, m) in chunk.iter().zip(&metas) {
                 let dir = f.path.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
                 let name = f.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -258,6 +266,9 @@ fn ingest(ctx: &Ctx, conn: &mut Connection, todo: Vec<Found>) -> rusqlite::Resul
                 if let Some(id) = f.prev {
                     thumbs::forget(&ctx.cache, id);
                     stale.execute([id])?;
+                    stale_ai.execute([id])?;
+                    stale_clip.execute([id])?;
+                    stale_faces.execute([id])?;
                 }
             }
         }
@@ -431,6 +442,30 @@ fn warmer_loop(ctx: Ctx, db_path: PathBuf, rx: Receiver<()>) {
             s.thumbs_pending = 0;
         });
         analyze_pending(&ctx, &conn, &pool);
+        learn_pending(&ctx, &conn, &pool);
+    }
+}
+
+/// On-device AI pass (search vectors, faces), when the user has turned it on.
+fn learn_pending(ctx: &Ctx, conn: &Connection, pool: &rayon::ThreadPool) {
+    use tauri::Manager;
+    let Some(state) = ctx.app.try_state::<crate::AppState>() else { return };
+    let ai = state.ai.clone();
+    if !ai.any_on() {
+        return;
+    }
+    let n = crate::ai::index_pending(&ai, &ctx.cache, conn, pool, |pending| {
+        ctx.update(false, |s| {
+            s.learning = pending > 0;
+            s.learn_pending = pending;
+        })
+    });
+    ctx.update(true, |s| {
+        s.learning = false;
+        s.learn_pending = 0;
+    });
+    if n > 0 {
+        let _ = ctx.app.emit("ai-changed", ());
     }
 }
 
@@ -503,6 +538,15 @@ fn collect_garbage(cache: &Path, conn: &Connection) {
             if stale_tmp || stem.is_some_and(|id| !live.contains(&id)) {
                 let _ = std::fs::remove_file(e.path());
             }
+        }
+    }
+    // face crops are keyed by face id
+    let Ok(faces) = db::ids(conn, "SELECT id FROM faces", []) else { return };
+    let faces: HashSet<i64> = faces.into_iter().collect();
+    for e in WalkDir::new(cache.join("f")).min_depth(2).max_depth(2).into_iter().flatten() {
+        let stem = e.path().file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<i64>().ok());
+        if stem.is_some_and(|id| !faces.contains(&id)) {
+            let _ = std::fs::remove_file(e.path());
         }
     }
 }

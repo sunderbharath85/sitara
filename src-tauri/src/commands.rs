@@ -398,3 +398,79 @@ pub async fn export_save(s: State<'_, AppState>, request: tauri::ipc::Request<'_
     })?;
     Ok(target.to_string_lossy().into_owned())
 }
+
+// ---------- on-device AI ----------
+
+#[tauri::command]
+pub async fn ai_status(s: State<'_, AppState>) -> R<crate::ai::AiStatus> {
+    let ai = s.ai.clone();
+    off_main(&s, move |c| Ok(ai.status(c))).await
+}
+
+/// Download and turn on "search" or "people"; the warmer starts learning once it's done.
+#[tauri::command]
+pub fn ai_install(app: AppHandle, s: State<'_, AppState>, feature: String) -> R<()> {
+    let wake = s.indexer.wake.clone();
+    s.ai.install(app, feature, move || {
+        let _ = wake.send(());
+    })
+}
+
+#[tauri::command]
+pub fn ai_remove(app: AppHandle, s: State<'_, AppState>, feature: String) -> R<()> {
+    s.ai.remove(&s.db.lock().unwrap(), &feature)?;
+    let _ = app.emit("ai-changed", ());
+    Ok(())
+}
+
+/// Photo ids that match a description, best first.
+#[tauri::command]
+pub async fn ai_search(s: State<'_, AppState>, q: String) -> R<Vec<i64>> {
+    let ai = s.ai.clone();
+    let path = s.db_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let c = db::open(&path).map_err(e)?;
+        Ok(ai.search(&c, &q)?.into_iter().map(|x| x.0).collect())
+    })
+    .await
+    .map_err(e)?
+}
+
+#[tauri::command]
+pub async fn people(s: State<'_, AppState>) -> R<Vec<crate::ai::people::Person>> {
+    off_main(&s, crate::ai::people::list).await
+}
+
+#[tauri::command]
+pub fn person_items(s: State<'_, AppState>, id: i64) -> R<Vec<i64>> {
+    crate::ai::people::items(&s.db.lock().unwrap(), id).map_err(e)
+}
+
+#[tauri::command]
+pub fn person_rename(app: AppHandle, s: State<'_, AppState>, id: i64, name: String) -> R<()> {
+    crate::ai::people::rename(&s.db.lock().unwrap(), id, &name).map_err(e)?;
+    let _ = app.emit("ai-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn person_merge(app: AppHandle, s: State<'_, AppState>, from: i64, into: i64) -> R<()> {
+    crate::ai::people::merge(&s.db.lock().unwrap(), from, into).map_err(e)?;
+    let _ = app.emit("ai-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn person_hide(app: AppHandle, s: State<'_, AppState>, id: i64, hidden: bool) -> R<()> {
+    crate::ai::people::hide(&s.db.lock().unwrap(), id, hidden).map_err(e)?;
+    let _ = app.emit("ai-changed", ());
+    Ok(())
+}
+
+/// "Not this person" for some photos.
+#[tauri::command]
+pub fn person_remove(app: AppHandle, s: State<'_, AppState>, id: i64, ids: Vec<i64>) -> R<()> {
+    crate::ai::people::remove_media(&s.db.lock().unwrap(), id, &ids).map_err(e)?;
+    let _ = app.emit("ai-changed", ());
+    Ok(())
+}

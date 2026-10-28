@@ -16,6 +16,7 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
 │ watch.rs     live folder watch   shell.rs     Windows thumbnailer │
 │ meta.rs      EXIF + MP4 parsing  db.rs        SQLite (WAL)        │
 │ raw.rs       RAW develop         export.rs    EXIF for exports    │
+│ ai/          CLIP search, faces, people, pinned model downloads   │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -81,6 +82,28 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
   - for JPEG, it carries over the original's EXIF, marked upright, with the new size, and without the old thumbnail, MakerNote or (unless asked) GPS;
   - it refuses to overwrite the original.
 
+## On-device AI (stage 4)
+
+- **Nothing ships in the installer.** Turning a feature on (Folders → On-device AI) downloads its pieces into `%LOCALAPPDATA%\app.sitara.photos\models`:
+  - ONNX Runtime 1.31: Microsoft's release library, loaded at runtime with `ort`'s `load-dynamic`. On Windows only the DLL is pulled out of the release zip, using HTTP range requests on its central directory.
+  - The models, from Hugging Face.
+  - Every file is checked against a SHA-256 pinned in `ai/mod.rs` before it is used.
+- **Learning** runs on the warmer thread after thumbnails and analysis. Each photo is decoded once (the upright original at 1600 px or less; videos use their thumbnail), then used for both passes:
+  - **CLIP ViT-B/32** (int8 ONNX) turns it into a 512-d vector, stored as int8 in `clip`.
+  - **YuNet** finds faces with five landmarks. Each face is aligned to the ArcFace template with a least-squares similarity transform, and **SFace** turns it into a 128-d vector, stored in `faces` with a box normalized to the upright photo.
+  - `ai_done` records which passes have seen a photo, so photos without faces aren't rescanned.
+  - A changed file drops its rows and is learned again.
+- **Search by meaning** (`ai_search`):
+  - The query becomes `a photo of {query}.`, is tokenized with CLIP's byte-level BPE (`ai/clip.rs`) and embedded by the text model.
+  - It is then scored against every vector in memory (int8 dot products; 100k photos is 51 MB).
+  - Results within 0.05 of the best match, and above 0.245, are kept (unrelated photos sit around 0.20; calibrated on a 6k-photo library).
+  - The UI lists exact name, folder and camera matches first, then matches by meaning. Queries made only of words the text search understands (years, months, "videos") skip it.
+- **People** (`ai/people.rs`):
+  - A new face joins the person whose average face is most similar (cosine ≥ 0.42; OpenCV suggests 0.363 for SFace).
+  - The rest are grouped with each other (≥ 0.46), and a group of three faces in at least two photos becomes an unnamed person.
+  - Names, merges, hiding and "not this person" are the user's, and regrouping never undoes them.
+  - Portraits are cropped from the original on demand (`thumb://localhost/face/{id}`) and cached.
+
 ## Conventions
 
 - **Capture time** (`taken`) is the wall-clock time the photo was taken, stored as seconds as if it were UTC. Every UI formatter uses `timeZone: "UTC"`, so a photo taken at 9:00 in Kyoto reads 9:00 everywhere. Order of preference: EXIF `DateTimeOriginal`, then MP4 `mvhd` creation time converted to local time, then file mtime.
@@ -95,6 +118,8 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
 | Thumbnails (360 px tall JPEG) | `%LOCALAPPDATA%\app.sitara.photos\thumbs\t\` |
 | Large previews (HEIC/RAW/TIFF) | `%LOCALAPPDATA%\app.sitara.photos\thumbs\p\` |
 | Renders of edited photos | `%LOCALAPPDATA%\app.sitara.photos\thumbs\et\` and `ep\` |
+| Face portraits | `%LOCALAPPDATA%\app.sitara.photos\thumbs\f\` |
+| AI models and runtime (optional) | `%LOCALAPPDATA%\app.sitara.photos\models\` |
 
 ## Developing without Tauri
 
@@ -102,4 +127,4 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
 
 ## Roadmap hooks
 
-- **AI:** ONNX Runtime with on-demand model download; CLIP embeddings and face clusters in their own tables.
+- **AI editing:** to be designed; the editor's edit stack and the on-demand ONNX runtime are its foundations.

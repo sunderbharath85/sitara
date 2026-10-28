@@ -79,6 +79,38 @@ CREATE TABLE edits(
 );
 "#;
 
+/// v4: on-device AI. `ai_done` remembers which passes have seen a photo; CLIP vectors are int8;
+/// face vectors are f32 with boxes normalized to the upright photo.
+const SCHEMA_V4: &str = r#"
+CREATE TABLE ai_done(
+  media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+  clip     INTEGER NOT NULL DEFAULT 0,
+  faces    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE clip(
+  media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+  vec      BLOB NOT NULL
+);
+CREATE TABLE people(
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  name    TEXT,
+  hidden  INTEGER NOT NULL DEFAULT 0,
+  cover   INTEGER,
+  created INTEGER NOT NULL
+);
+CREATE TABLE faces(
+  id        INTEGER PRIMARY KEY AUTOINCREMENT, -- keys the face-crop cache
+  media_id  INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+  x REAL NOT NULL, y REAL NOT NULL, w REAL NOT NULL, h REAL NOT NULL,
+  score     REAL NOT NULL,
+  vec       BLOB NOT NULL,
+  person_id INTEGER REFERENCES people(id) ON DELETE SET NULL,
+  blocked   INTEGER NOT NULL DEFAULT 0          -- the user said "not this person"
+);
+CREATE INDEX faces_media  ON faces(media_id);
+CREATE INDEX faces_person ON faces(person_id);
+"#;
+
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     let c = Connection::open(path)?;
     c.busy_timeout(Duration::from_secs(15))?;
@@ -97,6 +129,9 @@ pub fn migrate(c: &Connection) -> rusqlite::Result<()> {
     }
     if v < 3 {
         c.execute_batch(&format!("BEGIN; {SCHEMA_V3} PRAGMA user_version=3; COMMIT;"))?;
+    }
+    if v < 4 {
+        c.execute_batch(&format!("BEGIN; {SCHEMA_V4} PRAGMA user_version=4; COMMIT;"))?;
     }
     // the undo window for Recycle Bin moves is one session
     c.execute("DELETE FROM media WHERE trashed=1", [])?;

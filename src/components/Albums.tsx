@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, thumbUrl, type Albums as AlbumsData, type Lib, type SmartAlbum } from "../lib/api";
+import { api, faceUrl, thumbUrl, type Albums as AlbumsData, type Lib, type Person, type SmartAlbum } from "../lib/api";
 import { startShow } from "../lib/actions";
 import { fmtNum, plural } from "../lib/format";
 import { setSel, store, useStore, type AlbumPage as Page } from "../lib/store";
 import { Prompt } from "./Chrome";
 import { Grid } from "./Grid";
 import { Icon } from "./Icon";
+import { PeopleGrid, PeopleStrip, PersonActions } from "./People";
 import { toast } from "./Toasts";
 
-type Filter = "all" | "trips" | "places" | "smart" | "albums" | "folders";
+type Filter = "all" | "people" | "trips" | "places" | "smart" | "albums" | "folders";
 const FILTERS: [Filter, string][] = [
   ["all", "All"],
+  ["people", "People"],
   ["trips", "Trips"],
   ["places", "Places"],
   ["smart", "Smart"],
@@ -38,16 +40,24 @@ export function AlbumsView({ active }: { active: boolean }) {
   const page = useStore((s) => s.album);
   const [data, setData] = useState<AlbumsData | null>(null);
   const [smart, setSmart] = useState<SmartAlbum[]>([]);
+  const [people, setPeople] = useState<Person[]>([]);
+  const peopleOn = useStore((s) => !!s.ai?.people);
   const [filter, setFilter] = useState<Filter>("all");
   const [naming, setNaming] = useState(false);
   const load = () => {
     api.albums().then(setData).catch((e) => toast(String(e)));
     api.smartAlbums().then(setSmart).catch(() => {});
+    if (store.get().ai?.people) api.people().then(setPeople).catch(() => {});
+    else setPeople([]);
   };
   useEffect(() => {
     if (active && !page) load();
   }, [active, page, libVer]);
   useEffect(() => api.onAnalysisChanged(() => active && !store.get().album && api.smartAlbums().then(setSmart).catch(() => {})), [active]);
+  useEffect(() => api.onAiChanged(() => active && api.people().then(setPeople).catch(() => {})), [active]);
+  useEffect(() => {
+    if (active && peopleOn) api.people().then(setPeople).catch(() => {});
+  }, [active, peopleOn]);
 
   if (!lib) return null;
   if (page) return <AlbumPage lib={lib} page={page} active={active} onChanged={load} />;
@@ -59,6 +69,7 @@ export function AlbumsView({ active }: { active: boolean }) {
     ids: async () => a.ids,
   });
   const show = (f: Filter) => filter === "all" || filter === f;
+  const isPeople = filter === "people";
   const cards: Card[] = [
     ...(show("trips") ? smart.filter((a) => a.kind === "trip").map(smartCard) : []),
     ...(show("albums")
@@ -108,7 +119,9 @@ export function AlbumsView({ active }: { active: boolean }) {
           </button>
         ))}
       </div>
-      {data && cards.length === 0 && (
+      {filter === "all" && <PeopleStrip people={people} onAll={() => setFilter("people")} />}
+      {isPeople && <PeopleGrid people={people} />}
+      {data && !isPeople && cards.length === 0 && (
         <div className="empty">
           <b>{filter === "trips" ? "No trips found yet" : filter === "places" ? "No places yet" : "No albums yet"}</b>
           <span>
@@ -181,17 +194,24 @@ function AlbumPage({ lib, page, active, onChanged }: { lib: Lib; page: Page; act
   const header = (
     <div className="page-head album-head">
       <div className="ghost" aria-hidden="true">
-        {page.title.slice(0, 10).toUpperCase()}
+        {(page.title || (page.kind === "person" ? "PEOPLE" : "")).slice(0, 10).toUpperCase()}
       </div>
       <div className="sec-title">
         <button className="back" onClick={back}>
           <Icon n="left" s={16} />
           Albums
         </button>
-        <h2>{page.title}</h2>
+        {page.kind === "person" ? (
+          <div className="person-title">
+            {page.face != null && <img className="person-face" alt="" src={faceUrl(page.face)} />}
+            <h2 className={page.title ? "" : "unnamed"}>{page.title || "Who is this?"}</h2>
+          </div>
+        ) : (
+          <h2>{page.title}</h2>
+        )}
         <div className="stats">
           {plural(order.length, "item")}
-          {page.kind === "dir" ? ` · ${page.dir}` : page.kind === "smart" ? " · smart album" : ""}
+          {page.kind === "dir" ? ` · ${page.dir}` : page.kind === "smart" ? " · smart album" : page.kind === "person" ? " · found by face on this device" : ""}
         </div>
       </div>
       <div className="head-acts">
@@ -199,6 +219,7 @@ function AlbumPage({ lib, page, active, onChanged }: { lib: Lib; page: Page; act
           <Icon n="check" s={16} />
           Select all
         </button>
+        {page.kind === "person" && <PersonActions page={page} onChanged={onChanged} />}
         {page.kind === "album" && (
           <>
             <button className="btn" onClick={() => setRenaming(true)}>

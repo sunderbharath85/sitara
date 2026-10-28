@@ -29,6 +29,9 @@ fn query(req: &Request<Vec<u8>>, key: &str) -> Option<String> {
 }
 
 pub async fn serve(app: AppHandle, req: Request<Vec<u8>>, mode: Mode) -> Response<Vec<u8>> {
+    if mode == Mode::Thumb && req.uri().path().starts_with("/face/") {
+        return face(app, req).await;
+    }
     let id: Option<i64> = req.uri().path().trim_start_matches('/').split('/').next().and_then(|s| s.parse().ok());
     let Some(id) = id else { return reply(StatusCode::BAD_REQUEST, b"bad id".to_vec(), false) };
     let Some(state) = app.try_state::<AppState>() else {
@@ -70,6 +73,26 @@ pub async fn serve(app: AppHandle, req: Request<Vec<u8>>, mode: Mode) -> Respons
     })
     .await;
     match res {
+        Ok(Ok(bytes)) => reply(StatusCode::OK, bytes, true),
+        Ok(Err(e)) => reply(StatusCode::UNPROCESSABLE_ENTITY, e.into_bytes(), false),
+        Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, b"render panicked".to_vec(), false),
+    }
+}
+
+/// `thumb://localhost/face/{faceId}`: a square portrait for People.
+async fn face(app: AppHandle, req: Request<Vec<u8>>) -> Response<Vec<u8>> {
+    let id: Option<i64> = req.uri().path().trim_start_matches("/face/").parse().ok();
+    let Some(id) = id else { return reply(StatusCode::BAD_REQUEST, b"bad id".to_vec(), false) };
+    let Some(state) = app.try_state::<AppState>() else {
+        return reply(StatusCode::SERVICE_UNAVAILABLE, b"starting".to_vec(), false);
+    };
+    let row = { crate::ai::people::face(&state.db.lock().unwrap(), id).ok().flatten() };
+    let Some((path, ext, b)) = row else { return reply(StatusCode::NOT_FOUND, b"unknown".to_vec(), false) };
+    let cache = state.cache.clone();
+    let Ok(_permit) = state.render_slots.clone().acquire_owned().await else {
+        return reply(StatusCode::SERVICE_UNAVAILABLE, b"closing".to_vec(), false);
+    };
+    match tauri::async_runtime::spawn_blocking(move || thumbs::face(&cache, id, &PathBuf::from(path), &ext, b)).await {
         Ok(Ok(bytes)) => reply(StatusCode::OK, bytes, true),
         Ok(Err(e)) => reply(StatusCode::UNPROCESSABLE_ENTITY, e.into_bytes(), false),
         Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, b"render panicked".to_vec(), false),
