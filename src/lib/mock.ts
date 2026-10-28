@@ -46,6 +46,7 @@ export function createMock() {
     { id: 1, name: "Favorites of 2026", ids: items.filter((x) => x.fav).map((x) => x.id), updatedAt: Date.now() },
   ];
   const trashed = new Set<number>();
+  const edits = new Map<number, { stack: string; w: number; h: number; rev: number; thumb: string; preview: string }>();
   const listeners = new Map<string, Set<(p: unknown) => void>>();
   const emit = (ev: string, p?: unknown) => listeners.get(ev)?.forEach((f) => f(p));
   const status: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0, analyzing: false, analysisPending: 0 };
@@ -63,12 +64,13 @@ export function createMock() {
     list.forEach((x, i) => {
       const o = 8 + i * 24;
       dv.setUint32(o, x.id, true);
-      dv.setUint32(o + 4, 1, true);
+      const ed = edits.get(x.id);
+      dv.setUint32(o + 4, 1 + (ed?.rev ?? 0), true);
       dv.setFloat64(o + 8, x.taken, true);
-      dv.setUint16(o + 16, Math.min(65535, W(x)), true);
-      dv.setUint16(o + 18, Math.min(65535, H(x)), true);
+      dv.setUint16(o + 16, Math.min(65535, ed?.w ?? W(x)), true);
+      dv.setUint16(o + 18, Math.min(65535, ed?.h ?? H(x)), true);
       dv.setUint8(o + 20, x.kind);
-      dv.setUint8(o + 21, x.fav);
+      dv.setUint8(o + 21, x.fav | (ed ? 2 : 0));
       dv.setUint16(o + 22, x.dur, true);
     });
     return buf;
@@ -84,6 +86,7 @@ export function createMock() {
       duration: x.kind ? x.dur : null, make: c[0], model: c[1], lens: c[2] || null, fnumber: [1.8, 2, 2.8, 4][id % 4],
       exposure: ["1/250", "1/60", "1/1000"][id % 3], iso: [100, 200, 800][id % 3], focal: [23, 35, 24][id % 3],
       lat: id % 3 ? 35.0116 + (id % 7) / 100 : null, lon: id % 3 ? 135.7681 : null, favorite: !!x.fav, folder: ROOT,
+      edited: edits.get(id)?.rev ?? 0,
     };
   }
   function albumsResp(): Albums {
@@ -162,6 +165,12 @@ export function createMock() {
     },
     reveal: () => undefined,
     open_external: () => undefined,
+    edit_load: (a) => edits.get(a.id)?.stack ?? null,
+    edit_revert: (a) => {
+      const had = edits.delete(a.id);
+      setTimeout(() => emit("library-changed"), 30);
+      return had;
+    },
     smart_albums: (): SmartAlbum[] => {
       const L = live();
       const pick = (f: (x: Item) => boolean) => L.filter(f).map((x) => x.id);
@@ -222,16 +231,36 @@ export function createMock() {
     async pickFolder() {
       return "D:\\Phone backup\\DCIM";
     },
+    async editSave(id: number, w: number, h: number, stack: unknown, thumb: Blob, preview: Blob) {
+      const old = edits.get(id);
+      if (old) [old.thumb, old.preview].forEach((u) => URL.revokeObjectURL(u));
+      const rev = (old?.rev ?? 0) + 1;
+      edits.set(id, { stack: JSON.stringify(stack), w, h, rev, thumb: URL.createObjectURL(thumb), preview: URL.createObjectURL(preview) });
+      setTimeout(() => emit("library-changed"), 30);
+      return rev;
+    },
+    async exportSave(path: string, file: Blob) {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(file);
+      a.download = path.split(/[\\/]/).pop() ?? "export.jpg";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      return path;
+    },
     thumbUrl: (id: number) => {
+      const ed = edits.get(id);
+      if (ed) return ed.thumb;
       const x = byId.get(id);
       const ar = x?.ar ?? 1.5;
       return `https://picsum.photos/seed/s${id}/${Math.round(360 * ar)}/360`;
     },
-    fullUrl: (id: number) => {
-      const ar = byId.get(id)?.ar ?? 1.5;
-      return ar >= 1 ? `https://picsum.photos/seed/s${id}/1800/${Math.round(1800 / ar)}` : `https://picsum.photos/seed/s${id}/${Math.round(1500 * ar)}/1500`;
-    },
+    fullUrl: (id: number) => edits.get(id)?.preview ?? original(id),
+    originalUrl: (id: number) => original(id),
   };
+  function original(id: number) {
+    const ar = byId.get(id)?.ar ?? 1.5;
+    return ar >= 1 ? `https://picsum.photos/seed/s${id}/1800/${Math.round(1800 / ar)}` : `https://picsum.photos/seed/s${id}/${Math.round(1500 * ar)}/1500`;
+  }
 }
 
 export type MockBackend = ReturnType<typeof createMock>;

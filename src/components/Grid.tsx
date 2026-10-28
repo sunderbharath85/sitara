@@ -28,7 +28,7 @@ interface Props {
   scrollKey?: string;
 }
 
-const TileView = memo(function TileView({ t, id, ver, kind, dur, fav, sel }: { t: Tile; id: number; ver: number; kind: number; dur: number; fav: number; sel: boolean }) {
+const TileView = memo(function TileView({ t, id, ver, kind, dur, fav, edited, sel }: { t: Tile; id: number; ver: number; kind: number; dur: number; fav: number; edited: number; sel: boolean }) {
   const src = thumbUrl(id, ver);
   return (
     <figure
@@ -53,6 +53,11 @@ const TileView = memo(function TileView({ t, id, ver, kind, dur, fav, sel }: { t
         <Icon n="check" s={13} />
       </button>
       {kind === 1 && <span className="vbadge">▶ {fmtDur(dur)}</span>}
+      {edited ? (
+        <span className="edb" title="Edited">
+          <Icon n="sliders" s={11} />
+        </span>
+      ) : null}
       {fav ? (
         <span className="favb">
           <Icon n="heart" s={11} />
@@ -348,7 +353,7 @@ export function Grid({ lib, order, group, rail, active, label, header, empty, sc
           ))}
           {visible.map((t) => {
             const id = lib.id[t.i];
-            return <TileView key={id} t={t} id={id} ver={lib.ver[t.i]} kind={lib.kind[t.i]} dur={lib.dur[t.i]} fav={lib.fav[t.i]} sel={sel.has(id)} />;
+            return <TileView key={id} t={t} id={id} ver={lib.ver[t.i]} kind={lib.kind[t.i]} dur={lib.dur[t.i]} fav={lib.fav[t.i]} edited={lib.edited[t.i]} sel={sel.has(id)} />;
           })}
           {marq && <div className="marquee" style={{ left: marq.x, top: marq.y, width: marq.w, height: marq.h }} />}
         </div>

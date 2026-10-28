@@ -31,6 +31,7 @@ export interface State {
   search: { q: string; ids: number[] } | null;
   album: AlbumPage | null;
   viewer: { ids: number[]; idx: number; from?: DOMRect } | null;
+  editor: { id: number; from?: DOMRect } | null;
   show: ShowRequest | null;
   palette: boolean;
   picker: number[] | null;
@@ -48,6 +49,7 @@ let state: State = {
   search: null,
   album: null,
   viewer: null,
+  editor: null,
   show: null,
   palette: false,
   picker: null,

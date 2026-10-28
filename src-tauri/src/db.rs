@@ -67,6 +67,18 @@ CREATE TABLE analysis(
 );
 "#;
 
+/// v3: non-destructive edits. `stack` is the editor's JSON; width/height are the edited (cropped) size;
+/// `rev` is the save time in ms, mixed into the thumbnail URL version so every save busts caches.
+const SCHEMA_V3: &str = r#"
+CREATE TABLE edits(
+  media_id INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+  stack    TEXT NOT NULL,
+  width    INTEGER NOT NULL,
+  height   INTEGER NOT NULL,
+  rev      INTEGER NOT NULL
+);
+"#;
+
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     let c = Connection::open(path)?;
     c.busy_timeout(Duration::from_secs(15))?;
@@ -83,6 +95,9 @@ pub fn migrate(c: &Connection) -> rusqlite::Result<()> {
     if v < 2 {
         c.execute_batch(&format!("BEGIN; {SCHEMA_V2} PRAGMA user_version=2; COMMIT;"))?;
     }
+    if v < 3 {
+        c.execute_batch(&format!("BEGIN; {SCHEMA_V3} PRAGMA user_version=3; COMMIT;"))?;
+    }
     // the undo window for Recycle Bin moves is one session
     c.execute("DELETE FROM media WHERE trashed=1", [])?;
     Ok(())
@@ -95,12 +110,20 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Cache-busting version for an item's renders: file mtime, plus the edit revision when edited.
+pub fn version(mtime_ms: i64, rev: i64) -> u32 {
+    ((mtime_ms / 1000) as u32).wrapping_add((rev as u32).wrapping_mul(0x9E37_79B1))
+}
+
 /// Every visible item, newest first, packed as fixed 24-byte records so 100k items cross IPC as ~2.4 MB.
-/// Layout: "SIT1" u32 count, then per item: id u32, ver u32, taken f64, w u16, h u16, kind u8, fav u8, dur u16.
+/// Layout: "SIT1" u32 count, then per item: id u32, ver u32, taken f64, w u16, h u16, kind u8,
+/// flags u8 (bit 0 favorite, bit 1 edited), dur u16. Edited items report their cropped size.
 pub fn library_bytes(c: &Connection) -> rusqlite::Result<Vec<u8>> {
     let mut st = c.prepare_cached(
-        "SELECT id, mtime, taken, width, height, kind, favorite, duration FROM media
-         WHERE trashed=0 ORDER BY taken DESC, id DESC",
+        "SELECT m.id, m.mtime, m.taken, COALESCE(e.width, m.width), COALESCE(e.height, m.height), m.kind, m.favorite,
+                m.duration, COALESCE(e.rev, 0)
+         FROM media m LEFT JOIN edits e ON e.media_id=m.id
+         WHERE m.trashed=0 ORDER BY m.taken DESC, m.id DESC",
     )?;
     let mut out = Vec::with_capacity(8 + 24 * 1024);
     out.extend_from_slice(b"SIT1");
@@ -115,6 +138,7 @@ pub fn library_bytes(c: &Connection) -> rusqlite::Result<Vec<u8>> {
         let kind: i64 = r.get(5)?;
         let fav: i64 = r.get(6)?;
         let dur: Option<f64> = r.get(7)?;
+        let rev: i64 = r.get(8)?;
         // keep the aspect ratio when a panorama overflows u16
         let m = w.max(h);
         if m > 65535 {
@@ -122,12 +146,12 @@ pub fn library_bytes(c: &Connection) -> rusqlite::Result<Vec<u8>> {
             h = h * 65535 / m;
         }
         out.extend_from_slice(&(id as u32).to_le_bytes());
-        out.extend_from_slice(&((mtime / 1000) as u32).to_le_bytes());
+        out.extend_from_slice(&version(mtime, rev).to_le_bytes());
         out.extend_from_slice(&(taken as f64).to_le_bytes());
         out.extend_from_slice(&(w as u16).to_le_bytes());
         out.extend_from_slice(&(h as u16).to_le_bytes());
         out.push(kind as u8);
-        out.push(fav as u8);
+        out.push(fav as u8 | if rev != 0 { 2 } else { 0 });
         out.extend_from_slice(&(dur.unwrap_or(0.0).round().clamp(0.0, 65535.0) as u16).to_le_bytes());
         n += 1;
     }
@@ -161,14 +185,16 @@ pub struct MediaDetail {
     pub lon: Option<f64>,
     pub favorite: bool,
     pub folder: String,
+    /// Edit revision, 0 when the photo has no edits.
+    pub edited: i64,
 }
 
 pub fn detail(c: &Connection, id: i64) -> rusqlite::Result<Option<MediaDetail>> {
     c.query_row(
         "SELECT m.id, m.path, m.dir, m.name, m.ext, m.kind, m.size, m.mtime, m.width, m.height, m.taken,
                 m.duration, m.make, m.model, m.lens, m.fnumber, m.exposure, m.iso, m.focal, m.lat, m.lon,
-                m.favorite, f.path
-         FROM media m JOIN folders f ON f.id = m.folder_id WHERE m.id = ?1",
+                m.favorite, f.path, COALESCE(e.rev, 0)
+         FROM media m JOIN folders f ON f.id = m.folder_id LEFT JOIN edits e ON e.media_id = m.id WHERE m.id = ?1",
         [id],
         |r| {
             Ok(MediaDetail {
@@ -195,6 +221,7 @@ pub fn detail(c: &Connection, id: i64) -> rusqlite::Result<Option<MediaDetail>> 
                 lon: r.get(20)?,
                 favorite: r.get::<_, i64>(21)? != 0,
                 folder: r.get(22)?,
+                edited: r.get(23)?,
             })
         },
     )
@@ -344,6 +371,26 @@ pub fn albums(c: &Connection) -> rusqlite::Result<Albums> {
     Ok(Albums { manual, folders })
 }
 
+pub fn edit_get(c: &Connection, id: i64) -> rusqlite::Result<Option<String>> {
+    c.query_row("SELECT stack FROM edits WHERE media_id=?1", [id], |r| r.get(0)).optional()
+}
+
+/// Store an edit stack; returns its revision. Revisions are the save time and always move forward.
+pub fn edit_put(c: &Connection, id: i64, stack: &str, w: i64, h: i64) -> rusqlite::Result<i64> {
+    let prev: i64 = c.query_row("SELECT COALESCE(MAX(rev), 0) FROM edits WHERE media_id=?1", [id], |r| r.get(0))?;
+    let rev = now_ms().max(prev + 1);
+    c.execute(
+        "INSERT INTO edits(media_id, stack, width, height, rev) VALUES(?1,?2,?3,?4,?5)
+         ON CONFLICT(media_id) DO UPDATE SET stack=excluded.stack, width=excluded.width, height=excluded.height, rev=excluded.rev",
+        params![id, stack, w, h, rev],
+    )?;
+    Ok(rev)
+}
+
+pub fn edit_delete(c: &Connection, id: i64) -> rusqlite::Result<bool> {
+    Ok(c.execute("DELETE FROM edits WHERE media_id=?1", [id])? > 0)
+}
+
 pub fn ids(c: &Connection, sql: &str, p: impl rusqlite::Params) -> rusqlite::Result<Vec<i64>> {
     let mut st = c.prepare(sql)?;
     let rows = st.query_map(p, |r| r.get(0))?;
@@ -479,6 +526,26 @@ mod tests {
         assert_eq!(search(&c, "fujifilm").unwrap().len(), 1);
         assert_eq!(search(&c, "100%_").unwrap().len(), 0, "LIKE wildcards are escaped");
         assert_eq!(search(&c, "december").unwrap().len(), 1, "1_640_000_000 is Dec 2021");
+    }
+
+    #[test]
+    fn edits_override_size_flag_items_and_bump_versions() {
+        let c = lib();
+        let rec = |b: &[u8], i: usize| b[8 + i * 24..8 + (i + 1) * 24].to_vec();
+        let before = rec(&library_bytes(&c).unwrap(), 1); // IMG_1, 6000x4000
+        let id = u32::from_le_bytes(before[0..4].try_into().unwrap()) as i64;
+        assert_eq!(before[21], 0);
+        let r1 = edit_put(&c, id, r#"{"v":1}"#, 3000, 3000).unwrap();
+        let after = rec(&library_bytes(&c).unwrap(), 1);
+        assert_eq!(after[21], 2, "edited flag, not favorite");
+        assert_eq!(u16::from_le_bytes(after[16..18].try_into().unwrap()), 3000, "cropped width");
+        assert_ne!(before[4..8], after[4..8], "version changes so cached thumbnails refresh");
+        let r2 = edit_put(&c, id, r#"{"v":1,"x":1}"#, 3000, 3000).unwrap();
+        assert!(r2 > r1);
+        assert_eq!(edit_get(&c, id).unwrap().as_deref(), Some(r#"{"v":1,"x":1}"#));
+        assert_eq!(detail(&c, id).unwrap().unwrap().edited, r2);
+        assert!(edit_delete(&c, id).unwrap());
+        assert_eq!(rec(&library_bytes(&c).unwrap(), 1), before, "revert restores the original record");
     }
 
     #[test]

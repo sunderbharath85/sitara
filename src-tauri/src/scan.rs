@@ -496,7 +496,7 @@ fn analyze_pending(ctx: &Ctx, conn: &Connection, pool: &rayon::ThreadPool) {
 fn collect_garbage(cache: &Path, conn: &Connection) {
     let Ok(live) = db::ids(conn, "SELECT id FROM media", []) else { return };
     let live: HashSet<i64> = live.into_iter().collect();
-    for sub in ["t", "p"] {
+    for sub in ["t", "p", "et", "ep"] {
         for e in WalkDir::new(cache.join(sub)).min_depth(2).max_depth(2).into_iter().flatten() {
             let stem = e.path().file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<i64>().ok());
             let stale_tmp = e.path().extension().is_some_and(|x| x == "tmp");

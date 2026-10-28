@@ -55,7 +55,8 @@ function ViewerInner({ v, lib }: { v: NonNullable<ReturnType<typeof store.get>["
   const hist = useRef<HTMLCanvasElement>(null);
   const prevIdx = useRef(v.idx);
   const r = fit(ar, hud);
-  const thumb = i != null ? thumbUrl(id, lib.ver[i]) : "";
+  const ver = i != null ? lib.ver[i] : 0;
+  const thumb = i != null ? thumbUrl(id, ver) : "";
   const isVideo = i != null && lib.kind[i] === 1;
 
   // open: zoom out of the tile
@@ -111,7 +112,7 @@ function ViewerInner({ v, lib }: { v: NonNullable<ReturnType<typeof store.get>["
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, ver]);
 
   useEffect(() => {
     if (an && hist.current) drawHist(hist.current, an.hist);
@@ -149,10 +150,12 @@ function ViewerInner({ v, lib }: { v: NonNullable<ReturnType<typeof store.get>["
     }
   };
   const fav = i != null && lib.fav[i] === 1;
+  const edited = i != null && lib.edited[i] === 1;
+  const edit = () => store.set({ editor: { id, from: stage.current?.getBoundingClientRect() } });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (store.get().show || store.get().palette || store.get().picker) return;
+      if (store.get().show || store.get().palette || store.get().picker || store.get().editor) return;
       const k = e.key;
       if (k === "Escape") close();
       else if (k === "ArrowRight") go(v.idx + 1);
@@ -162,6 +165,7 @@ function ViewerInner({ v, lib }: { v: NonNullable<ReturnType<typeof store.get>["
       else if (k === "p" || k === "P") startShow(v.ids, "Viewer", { start: id, rect: stage.current?.getBoundingClientRect() });
       else if (k === "Delete") trash([id]);
       else if (k === "a" || k === "A") openPicker([id]);
+      else if ((k === "e" || k === "E") && !isVideo) edit();
       else if (k === "0") setZ({ s: 1, x: 0, y: 0 });
       else return;
       e.preventDefault();
@@ -259,6 +263,12 @@ function ViewerInner({ v, lib }: { v: NonNullable<ReturnType<typeof store.get>["
           <button className="vbtn" onClick={() => openPicker([id])} title="Add to album (A)">
             <Icon n="plus" />
           </button>
+          {!isVideo && (
+            <button className={`vbtn edit-btn${edited ? " on" : ""}`} onClick={edit} title={edited ? "Edited · open the editor (E)" : "Edit (E)"}>
+              <Icon n="sliders" />
+              <span>{edited ? "Edited" : "Edit"}</span>
+            </button>
+          )}
           <button className="vbtn" onClick={() => startShow(v.ids, "Viewer", { start: id, rect: stage.current?.getBoundingClientRect() })} title="Slideshow from here (P)">
             <Icon n="slides" />
             <span>Slideshow</span>

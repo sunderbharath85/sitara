@@ -4,7 +4,7 @@ A fast, private photo and video gallery for Windows, macOS and Linux. Built with
 
 Sitara reads the folders you choose, builds one timeline of every photo and clip, and keeps everything on your device. No account, no upload, no cloud.
 
-> **Status: early development (v0.1).** The foundation works end to end on Windows; macOS and Linux builds run in CI. Expect rough edges.
+> **Status: early development.** The foundation, smart albums, cleanup and the editor work end to end on Windows; macOS and Linux builds run in CI. Expect rough edges.
 
 ## What works today
 
@@ -30,6 +30,18 @@ Sitara reads the folders you choose, builds one timeline of every photo and clip
   - old screenshots.
 
   Each group gets a best pick scored on sharpness, exposure and resolution. `Enter` recycles the rest, with Undo.
+- **Editor** (`E` on a photo):
+  - Non-destructive: edits are stored as data and rendered on the GPU. The original file is never changed, and Revert is always one click away.
+  - **Adjust:** exposure, contrast, highlights, shadows, whites, blacks, temperature, tint, vibrance, saturation, clarity, dehaze, sharpening, vignette, grain and fade, plus one-click **Auto**.
+  - **Looks:** 14 built-in styles, previewed on your photo, with a strength slider. They sit under your own sliders instead of replacing them.
+  - **Color:** an 8-band color mixer (hue, saturation, luminance), black & white with its own mix, and three-wheel color grading.
+  - **Curves:** RGB and per-channel point curves.
+  - **Crop:** aspect presets, straighten (drag outside the frame), rotate and flip.
+  - **Masks:** linear gradients, radial masks and a brush, each with its own adjustments.
+  - **Heal:** click a blemish and a matching patch is found and color-matched automatically. Clone mode is there too.
+  - **RAW:** Canon, Nikon, Sony, Fujifilm, DNG and more are developed in Rust from the sensor data, so highlights have headroom to recover.
+  - Before/after split, clipping warnings, a live histogram, unlimited undo, and copy/paste settings between photos.
+  - **Export** a JPEG, PNG or WebP copy at full or reduced size, keeping camera details and (only if you choose) location.
 - **Albums:** every folder becomes an album automatically; make your own from any selection.
 - **Select and act:** click, Ctrl/Shift-click or lasso to select, then favorite, add to an album, play as a slideshow, or move to the Recycle Bin with **Undo**.
 - **Search** (Ctrl K): file and folder names, cameras, years, months, "videos", "favorites".
@@ -46,6 +58,11 @@ Sitara reads the folders you choose, builds one timeline of every photo and clip
 | Viewer: `←` `→` `I` `0` `Esc` | Navigate, info panels, reset zoom, close |
 | Slideshow: `Space` `T` `M` `S` `F` | Pause, transition, music, style panel, fullscreen |
 | Cleanup: `Enter` `S` `A` | Recycle marked, skip group, keep all |
+| `E` | Edit the photo in the viewer (or the one selected photo) |
+| Editor: `1`–`4` `R` `M` `H` | Looks, Adjust, Color, Curves, Crop, Masks, Heal |
+| Editor: `\` (hold) `Y` `J` `O` `Z` | Original, before/after split, clipping, mask overlay, 100% zoom |
+| Editor: `Ctrl Z` `Ctrl Shift Z` `Ctrl S` `Ctrl E` | Undo, redo, save, export |
+| Editor: `Ctrl Shift C` / `V`, `[` `]` | Copy / paste settings, brush size |
 
 ## Roadmap
 
@@ -53,7 +70,7 @@ Sitara reads the folders you choose, builds one timeline of every photo and clip
 |---|---|
 | 1. Foundation ✅ | Indexing and live watching, EXIF, thumbnail cache, timeline, viewer, albums, slideshow, installers |
 | 2. Smart albums + cleanup ✅ | Trips and places, duplicate and blurry-shot finder, safe cleanup |
-| 3. Editor | Non-destructive essentials, then curves, HSL, masks, healing and RAW |
+| 3. Editor ✅ | Non-destructive essentials, looks, curves, color mixer and grading, masks, healing, RAW, export |
 | 4. On-device AI | Search by words (CLIP), faces and people. Models download on demand and run offline |
 | 5. AI editing | To be designed |
 
@@ -83,4 +100,4 @@ How it fits together: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The original
 
 [GPL-3.0-or-later](LICENSE)
 
-Place names: [GeoNames](https://www.geonames.org) cities database, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Rebuild the embedded copy with `scripts/geonames.py`.
+RAW decoding: [rawler](https://github.com/dnglab/dnglab) (LGPL-2.1). Place names: [GeoNames](https://www.geonames.org) cities database, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Rebuild the embedded copy with `scripts/geonames.py`.

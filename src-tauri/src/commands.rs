@@ -298,3 +298,103 @@ pub async fn smart_albums(s: State<'_, AppState>) -> R<Vec<crate::smart::SmartAl
 pub async fn cleanup_scan(s: State<'_, AppState>) -> R<crate::cleanup::Report> {
     off_main(&s, crate::cleanup::scan).await
 }
+
+// ---------- editor ----------
+
+/// Raw-body IPC for large binary payloads: [u32 LE header length][JSON header][bytes...].
+fn raw_body<'a, H: serde::de::DeserializeOwned>(req: &'a tauri::ipc::Request<'_>) -> R<(H, &'a [u8])> {
+    let tauri::ipc::InvokeBody::Raw(body) = req.body() else { return Err("expected a binary body".into()) };
+    let n = body.get(..4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize).ok_or("short body")?;
+    let head = body.get(4..4 + n).ok_or("short body")?;
+    Ok((serde_json::from_slice(head).map_err(e)?, &body[4 + n..]))
+}
+
+fn is_jpeg(b: &[u8]) -> bool {
+    b.len() > 4 && b[0..2] == [0xFF, 0xD8]
+}
+
+/// The saved edit stack (editor JSON), if the photo has edits.
+#[tauri::command]
+pub fn edit_load(s: State<'_, AppState>, id: i64) -> R<Option<String>> {
+    db::edit_get(&s.db.lock().unwrap(), id).map_err(e)
+}
+
+#[derive(serde::Deserialize)]
+struct SaveHead {
+    id: i64,
+    w: i64,
+    h: i64,
+    stack: serde_json::Value,
+    /// Byte length of the thumbnail JPEG; the preview JPEG follows it.
+    thumb: usize,
+}
+
+/// Save an edit stack with the editor's renders of the result (grid thumbnail + large preview).
+/// Originals are never touched. Returns the new revision.
+#[tauri::command]
+pub async fn edit_save(app: AppHandle, s: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> R<i64> {
+    let (head, rest): (SaveHead, &[u8]) = raw_body(&request)?;
+    let (thumb, preview) = rest.split_at(head.thumb.min(rest.len()));
+    if !is_jpeg(thumb) || !is_jpeg(preview) || head.w <= 0 || head.h <= 0 {
+        return Err("The edited renders are incomplete".into());
+    }
+    // renders first, so a new version never points at missing files
+    thumbs::write_atomic(&thumbs::edited_file(&s.cache, head.id, thumbs::Mode::Thumb), thumb);
+    thumbs::write_atomic(&thumbs::edited_file(&s.cache, head.id, thumbs::Mode::Preview), preview);
+    let rev = db::edit_put(&s.db.lock().unwrap(), head.id, &head.stack.to_string(), head.w, head.h).map_err(e)?;
+    let _ = app.emit("library-changed", ());
+    Ok(rev)
+}
+
+/// Drop all edits: the photo shows its original again.
+#[tauri::command]
+pub fn edit_revert(app: AppHandle, s: State<'_, AppState>, id: i64) -> R<bool> {
+    let had = db::edit_delete(&s.db.lock().unwrap(), id).map_err(e)?;
+    thumbs::forget_edited(&s.cache, id);
+    let _ = app.emit("library-changed", ());
+    Ok(had)
+}
+
+#[derive(serde::Deserialize)]
+struct ExportHead {
+    id: i64,
+    path: String,
+    w: u32,
+    h: u32,
+    /// Copy camera metadata (EXIF) from the original.
+    exif: bool,
+    /// Keep the location when copying metadata.
+    gps: bool,
+}
+
+/// Write an exported copy (encoded by the editor) to a path the user picked. Never overwrites the original.
+#[tauri::command]
+pub async fn export_save(s: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> R<String> {
+    let (head, bytes): (ExportHead, &[u8]) = raw_body(&request)?;
+    let original = PathBuf::from(path_of(&s, head.id)?);
+    let target = PathBuf::from(&head.path);
+    let same = |a: &Path, b: &Path| match (dunce::canonicalize(a), dunce::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    if same(&original, &target) {
+        return Err("Sitara won't overwrite the original. Pick a new file name.".into());
+    }
+    let mut out = bytes.to_vec();
+    if head.exif && is_jpeg(&out) {
+        let orig = original.clone();
+        let app1 = tauri::async_runtime::spawn_blocking(move || crate::export::exif_for_export(&orig, head.w, head.h, head.gps))
+            .await
+            .map_err(e)?;
+        if let Some(spliced) = app1.and_then(|p| crate::export::splice_app1(&out, &p)) {
+            out = spliced;
+        }
+    }
+    let tmp = target.with_extension("sitara-tmp");
+    std::fs::write(&tmp, &out).map_err(|err| format!("Couldn't write {}: {err}", target.display()))?;
+    std::fs::rename(&tmp, &target).map_err(|err| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("Couldn't write {}: {err}", target.display())
+    })?;
+    Ok(target.to_string_lossy().into_owned())
+}

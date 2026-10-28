@@ -14,6 +14,7 @@ export interface Lib {
   h: Uint16Array;
   kind: Uint8Array; // 0 photo, 1 video
   fav: Uint8Array;
+  edited: Uint8Array;
   dur: Uint16Array;
   pos: Map<number, number>; // id -> index
 }
@@ -42,6 +43,8 @@ export interface MediaDetail {
   lon: number | null;
   favorite: boolean;
   folder: string;
+  /** Edit revision; 0 when unedited. */
+  edited: number;
 }
 
 export interface FolderInfo {
@@ -152,6 +155,7 @@ export function decodeLibrary(buf: ArrayBuffer): Lib {
     h: new Uint16Array(n),
     kind: new Uint8Array(n),
     fav: new Uint8Array(n),
+    edited: new Uint8Array(n),
     dur: new Uint16Array(n),
     pos: new Map(),
   };
@@ -163,11 +167,28 @@ export function decodeLibrary(buf: ArrayBuffer): Lib {
     lib.w[i] = dv.getUint16(o + 16, true);
     lib.h[i] = dv.getUint16(o + 18, true);
     lib.kind[i] = dv.getUint8(o + 20);
-    lib.fav[i] = dv.getUint8(o + 21);
+    const flags = dv.getUint8(o + 21);
+    lib.fav[i] = flags & 1;
+    lib.edited[i] = (flags >> 1) & 1;
     lib.dur[i] = dv.getUint16(o + 22, true);
     lib.pos.set(lib.id[i], i);
   }
   return lib;
+}
+
+/** [u32 LE header length][JSON header][blobs...], for commands that take a binary body. */
+async function rawBody(head: unknown, blobs: Blob[]): Promise<Uint8Array> {
+  const h = new TextEncoder().encode(JSON.stringify(head));
+  const parts = await Promise.all(blobs.map((b) => b.arrayBuffer()));
+  const out = new Uint8Array(4 + h.length + parts.reduce((a, p) => a + p.byteLength, 0));
+  new DataView(out.buffer).setUint32(0, h.length, true);
+  out.set(h, 4);
+  let o = 4 + h.length;
+  for (const p of parts) {
+    out.set(new Uint8Array(p), o);
+    o += p.byteLength;
+  }
+  return out;
 }
 
 let mock: MockBackend | null = null;
@@ -209,6 +230,30 @@ export const api = {
   openExternal: (id: number) => call<void>("open_external", { id }),
   smartAlbums: () => call<SmartAlbum[]>("smart_albums"),
   cleanupScan: () => call<CleanupReport>("cleanup_scan"),
+  editLoad: (id: number) => call<string | null>("edit_load", { id }),
+  editRevert: (id: number) => call<boolean>("edit_revert", { id }),
+  /** Save an edit stack plus the editor's renders (grid thumbnail, large preview). Returns the revision. */
+  async editSave(id: number, w: number, h: number, stack: unknown, thumb: Blob, preview: Blob): Promise<number> {
+    if (mock) return mock.editSave(id, w, h, stack, thumb, preview);
+    const body = await rawBody({ id, w, h, stack, thumb: thumb.size }, [thumb, preview]);
+    return invoke<number>("edit_save", body);
+  },
+  /** Write an exported copy to `path`. Returns the written path. */
+  async exportSave(head: { id: number; path: string; w: number; h: number; exif: boolean; gps: boolean }, file: Blob): Promise<string> {
+    if (mock) return mock.exportSave(head.path, file);
+    return invoke<string>("export_save", await rawBody(head, [file]));
+  },
+  async pickSavePath(defaultPath: string, ext: string): Promise<string | null> {
+    if (mock) return defaultPath;
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const name = ext === "png" ? "PNG image" : ext === "webp" ? "WebP image" : "JPEG image";
+    return save({ defaultPath, title: "Export edited copy", filters: [{ name, extensions: ext === "jpg" ? ["jpg", "jpeg"] : [ext] }] });
+  },
+  async revealPath(path: string) {
+    if (mock) return;
+    const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+    await revealItemInDir(path);
+  },
 
   async pickFolder(): Promise<string | null> {
     if (mock) return mock.pickFolder();
@@ -257,12 +302,24 @@ export const api = {
 export const thumbUrl = (id: number, ver: number) =>
   mock ? mock.thumbUrl(id) : `${convertFileSrc(String(id), "thumb")}?v=${ver}`;
 
-/** Full-resolution source for the viewer and slideshow. */
+/** Full-resolution source for the viewer and slideshow. Edited photos show the editor's render. */
 export function mediaSrc(d: MediaDetail): string {
   if (mock) return mock.fullUrl(d.id);
+  if (d.kind === 0 && d.edited) return `${convertFileSrc(String(d.id), "preview")}?v=${Math.floor(d.mtime / 1000)}&e=${d.edited}`;
   if (d.kind === 1 || WEB_SAFE.has(d.ext) || (MAC && (d.ext === "heic" || d.ext === "heif" || d.ext === "tif" || d.ext === "tiff")))
     return convertFileSrc(d.path);
   return `${convertFileSrc(String(d.id), "preview")}?v=${Math.floor(d.mtime / 1000)}`;
+}
+
+/**
+ * The editor's original pixels: the webview decodes web formats itself; RAW, HEIC and TIFF come from Rust
+ * (`fallback` covers a web format the webview can't read after all).
+ */
+export function editSource(d: MediaDetail): { url: string; binary: boolean; fallback?: string } {
+  if (mock) return { url: mock.originalUrl(d.id), binary: false };
+  const full = `${convertFileSrc(String(d.id), "preview")}?full=1&v=${Math.floor(d.mtime / 1000)}`;
+  if (WEB_SAFE.has(d.ext) && d.ext !== "svg") return { url: convertFileSrc(d.path), binary: false, fallback: full };
+  return { url: full, binary: true };
 }
 
 const details = new Map<number, Promise<MediaDetail | null>>();
@@ -277,3 +334,4 @@ export function detailCached(id: number) {
   return p;
 }
 export const forgetDetails = () => details.clear();
+export const forgetDetail = (id: number) => details.delete(id);

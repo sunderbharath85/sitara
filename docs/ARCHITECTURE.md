@@ -15,6 +15,7 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
 │ scan.rs      indexer + warmer    thumbs.rs    render + disk cache │
 │ watch.rs     live folder watch   shell.rs     Windows thumbnailer │
 │ meta.rs      EXIF + MP4 parsing  db.rs        SQLite (WAL)        │
+│ raw.rs       RAW develop         export.rs    EXIF for exports    │
 └───────────────────────────────────────────────────────────────────┘
 ```
 
@@ -52,6 +53,34 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
   - Places are per-city groups of 5 or more photos.
   - Collections are simple rules over the media table.
 
+## Editor (stage 3)
+
+- **The edit stack is data.** `src/lib/edit/stack.ts` defines it: global adjustments, the look and its strength, curves, color mixer, grading, geometry (quarter turns, flip, straighten, crop), masks and heal spots.
+  - It is saved as JSON in the `edits` table, one row per photo.
+  - The original file is never written.
+  - Masks and heal spots live in *p-space*: the upright source scaled so its long edge is 1. That way they stay attached to the content when you crop or rotate.
+- **Rendering** (`src/lib/edit/renderer.ts`, `shaders.ts`) is WebGL2. The source sits on the GPU at full resolution, mipmapped. Each change re-runs only the passes it touches:
+  1. **Heal:** copies each spot's source patch onto it, plus a color offset measured from the rings around both patches, with a feathered edge.
+  2. **Blur:** a 320 px luminance and dark-channel image, the local base for clarity, shadows/highlights and dehaze.
+  3. **Brush masks:** instanced dabs into two RGBA atlases, one mask per channel.
+  4. **Develop:** one fragment shader does everything per pixel:
+     - in linear light: white balance, exposure, dehaze;
+     - on perceptual luminance, applied as a ratio so hue is kept: tone;
+     - in OKLab: vibrance, saturation, color mixer, grading;
+     - then gamut mapping, vignette, curves (LUT), fade, grain and dither.
+     - Each mask adds its own sliders to the global ones, weighted per pixel.
+- **Geometry** (`geometry.ts`, `view.ts`) is a chain of 2D affine maps: screen → output → straightened frame → quarter turns → source uv. The crop is kept legal (inside the photo) by bisection over valid states.
+- **Sources** (`source.ts`):
+  - JPEG, PNG and WebP are decoded by the webview (`createImageBitmap`, EXIF-upright, color-managed).
+  - RAW, HEIC and TIFF come from `preview://localhost/{id}?full=1` as raw pixels in an `SRC1` container.
+  - RAW (`raw.rs`, via rawler) is demosaiced, white-balanced and converted to linear sRGB. It is then packed as 10-bit log codes (RGB10_A2), keeping about four stops above white for highlight recovery.
+- **Saving** renders a 360 px-tall thumbnail and a 2560 px preview of the result. Rust stores them as `et/` and `ep/` next to the thumbnail cache, and `thumb://` and `preview://` serve them in place of the original's renders.
+  - The library record gets an *edited* flag and the cropped size.
+  - Its version mixes in the edit revision (the save time), so every cached URL refreshes.
+- **Export** renders the output in 2048 px tiles and encodes it with the webview's encoder. Rust then writes the file:
+  - for JPEG, it carries over the original's EXIF, marked upright, with the new size, and without the old thumbnail, MakerNote or (unless asked) GPS;
+  - it refuses to overwrite the original.
+
 ## Conventions
 
 - **Capture time** (`taken`) is the wall-clock time the photo was taken, stored as seconds as if it were UTC. Every UI formatter uses `timeZone: "UTC"`, so a photo taken at 9:00 in Kyoto reads 9:00 everywhere. Order of preference: EXIF `DateTimeOriginal`, then MP4 `mvhd` creation time converted to local time, then file mtime.
@@ -65,6 +94,7 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
 | Library database | `%APPDATA%\app.sitara.photos\library.db` |
 | Thumbnails (360 px tall JPEG) | `%LOCALAPPDATA%\app.sitara.photos\thumbs\t\` |
 | Large previews (HEIC/RAW/TIFF) | `%LOCALAPPDATA%\app.sitara.photos\thumbs\p\` |
+| Renders of edited photos | `%LOCALAPPDATA%\app.sitara.photos\thumbs\et\` and `ep\` |
 
 ## Developing without Tauri
 
@@ -72,6 +102,4 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
 
 ## Roadmap hooks
 
-- **Smart albums and cleanup:** perceptual hashes and sharpness scores computed in the warmer pass, stored next to `media`.
-- **Editor:** a non-destructive edit stack per media id, rendered on the GPU in the viewer.
 - **AI:** ONNX Runtime with on-demand model download; CLIP embeddings and face clusters in their own tables.

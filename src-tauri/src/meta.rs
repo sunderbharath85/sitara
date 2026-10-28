@@ -113,6 +113,13 @@ fn photo(path: &Path) -> Meta {
             m.height = h as i64;
         }
     }
+    // a RAW's first image is its thumbnail; ask the decoder for the real size
+    if ext_of(path).is_some_and(|e| crate::raw::is_raw(&e)) {
+        if let Some((w, h)) = crate::raw::dims(path) {
+            m.width = w as i64;
+            m.height = h as i64;
+        }
+    }
     // rotated 90/270: the stored pixels are sideways, the photo is not
     if matches!(uint(Tag::Orientation), Some(5..=8)) {
         std::mem::swap(&mut m.width, &mut m.height);

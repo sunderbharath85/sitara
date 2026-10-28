@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import { AlbumsView } from "./components/Albums";
 import { AlbumPicker, Dock, TopBar, Tray } from "./components/Chrome";
 import { CleanupView } from "./components/Cleanup";
+import { Editor } from "./components/editor/Editor";
 import { FoldersView, Welcome } from "./components/Folders";
 import { activeGrid, Grid } from "./components/Grid";
 import { Palette } from "./components/Palette";
@@ -66,7 +67,7 @@ export default function App() {
   const view = useStore((s) => s.view);
   const folders = useStore((s) => s.folders);
   const selCount = useStore((s) => s.sel.size);
-  const viewing = useStore((s) => !!s.viewer);
+  const viewing = useStore((s) => !!s.viewer || !!s.editor);
 
   useEffect(() => {
     reloadLibrary();
@@ -109,7 +110,7 @@ export default function App() {
         store.set({ palette: !s.palette });
         return;
       }
-      if (s.palette || s.viewer || s.show || s.picker) return;
+      if (s.palette || s.viewer || s.show || s.picker || s.editor) return;
       if ((e.target as HTMLElement).matches?.("input,textarea,select")) return;
       if (document.querySelector(".modal-wrap")) return;
       if (k === "/") {
@@ -134,6 +135,9 @@ export default function App() {
         setFavorite(ids, !ids.every((id) => s.lib!.fav[s.lib!.pos.get(id) ?? -1] === 1));
       } else if ((k === "a" || k === "A") && s.sel.size) {
         openPicker([...s.sel]);
+      } else if ((k === "e" || k === "E") && s.sel.size === 1 && s.lib) {
+        const id = [...s.sel][0];
+        if (s.lib.kind[s.lib.pos.get(id) ?? -1] === 0) store.set({ editor: { id } });
       }
     };
     addEventListener("keydown", onKey);
@@ -168,6 +172,7 @@ export default function App() {
       <Dock />
       <Tray />
       <Viewer />
+      <Editor />
       <Slideshow />
       <Palette />
       <AlbumPicker />

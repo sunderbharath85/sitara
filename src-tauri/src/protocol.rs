@@ -1,5 +1,7 @@
 //! `thumb://localhost/{id}` and `preview://localhost/{id}`: cached JPEGs rendered on demand.
 //! Requests queue on a semaphore (FIFO) so the tiles the user is looking at render first.
+//! An edited photo serves the editor's renders instead. `preview://localhost/{id}?full=1&max=N`
+//! returns the editor's full-resolution source pixels (see `thumbs::full_source`), uncached.
 
 use crate::thumbs::{self, Mode};
 use crate::{db, AppState};
@@ -13,10 +15,17 @@ fn reply(status: StatusCode, body: Vec<u8>, cache: bool) -> Response<Vec<u8>> {
         .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*") // lets the viewer read pixels for histogram and palette
         .header(header::CONTENT_TYPE, if status == StatusCode::OK { "image/jpeg" } else { "text/plain" });
     if cache {
-        // URLs carry ?v=<mtime>, so a cached response can never go stale
+        // URLs carry ?v=<mtime + edit revision>, so a cached response can never go stale
         b = b.header(header::CACHE_CONTROL, "public, max-age=31536000, immutable");
     }
     b.body(body).unwrap()
+}
+
+fn query(req: &Request<Vec<u8>>, key: &str) -> Option<String> {
+    req.uri().query()?.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+        (k == key).then(|| v.to_string())
+    })
 }
 
 pub async fn serve(app: AppHandle, req: Request<Vec<u8>>, mode: Mode) -> Response<Vec<u8>> {
@@ -27,8 +36,27 @@ pub async fn serve(app: AppHandle, req: Request<Vec<u8>>, mode: Mode) -> Respons
     };
     let cache = state.cache.clone();
 
-    let cached = thumbs::cache_file(&cache, id, mode);
-    if let Ok(Ok(bytes)) = tauri::async_runtime::spawn_blocking(move || std::fs::read(cached)).await {
+    if mode == Mode::Preview && query(&req, "full").is_some() {
+        let max: u32 = query(&req, "max").and_then(|m| m.parse().ok()).unwrap_or(16384);
+        let src = { db::source(&state.db.lock().unwrap(), id).ok().flatten() };
+        let Some((path, ext, _)) = src else { return reply(StatusCode::NOT_FOUND, b"unknown".to_vec(), false) };
+        let res = tauri::async_runtime::spawn_blocking(move || thumbs::full_source(&PathBuf::from(path), &ext, max)).await;
+        return match res {
+            Ok(Ok(bytes)) => Response::builder()
+                .status(StatusCode::OK)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .header(header::CACHE_CONTROL, "no-store")
+                .body(bytes)
+                .unwrap(),
+            Ok(Err(e)) => reply(StatusCode::UNPROCESSABLE_ENTITY, e.into_bytes(), false),
+            Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, b"decode panicked".to_vec(), false),
+        };
+    }
+
+    let (edited, cached) = (thumbs::edited_file(&cache, id, mode), thumbs::cache_file(&cache, id, mode));
+    let hit = tauri::async_runtime::spawn_blocking(move || std::fs::read(edited).or_else(|_| std::fs::read(cached))).await;
+    if let Ok(Ok(bytes)) = hit {
         return reply(StatusCode::OK, bytes, true);
     }
 

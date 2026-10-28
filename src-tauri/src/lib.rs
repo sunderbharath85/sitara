@@ -2,9 +2,11 @@ mod analysis;
 mod cleanup;
 mod commands;
 mod db;
+mod export;
 mod geo;
 mod meta;
 mod protocol;
+mod raw;
 mod scan;
 #[cfg(windows)]
 mod shell;
@@ -100,6 +102,10 @@ pub fn run() {
             commands::open_external,
             commands::smart_albums,
             commands::cleanup_scan,
+            commands::edit_load,
+            commands::edit_save,
+            commands::edit_revert,
+            commands::export_save,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sitara");

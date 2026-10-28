@@ -1,7 +1,8 @@
 //! Thumbnail and preview rendering with an on-disk JPEG cache.
 //!
 //! Formats the `image` crate decodes are rendered in Rust (EXIF orientation applied).
-//! Video, HEIC and RAW go through the OS thumbnailer on Windows, then FFmpeg if it is on PATH.
+//! RAW uses the camera's embedded preview; video and HEIC go through the OS thumbnailer on Windows,
+//! then FFmpeg if it is on PATH. Edited photos get their own renders, made by the editor (`et`, `ep`).
 
 use fast_image_resize as fr;
 use image::{DynamicImage, ImageDecoder, ImageReader, RgbImage};
@@ -24,9 +25,20 @@ pub fn cache_file(cache: &Path, id: i64, mode: Mode) -> PathBuf {
     cache.join(sub).join(format!("{:03}", id % 1000)).join(format!("{id}.jpg"))
 }
 
+/// Renders of the edited photo, written by the editor when edits are saved. Served instead of the original's.
+pub fn edited_file(cache: &Path, id: i64, mode: Mode) -> PathBuf {
+    let sub = if mode == Mode::Thumb { "et" } else { "ep" };
+    cache.join(sub).join(format!("{:03}", id % 1000)).join(format!("{id}.jpg"))
+}
+
 pub fn forget(cache: &Path, id: i64) {
     let _ = std::fs::remove_file(cache_file(cache, id, Mode::Thumb));
     let _ = std::fs::remove_file(cache_file(cache, id, Mode::Preview));
+}
+
+pub fn forget_edited(cache: &Path, id: i64) {
+    let _ = std::fs::remove_file(edited_file(cache, id, Mode::Thumb));
+    let _ = std::fs::remove_file(edited_file(cache, id, Mode::Preview));
 }
 
 pub fn rust_decodable(ext: &str) -> bool {
@@ -44,7 +56,7 @@ pub fn ensure(cache: &Path, id: i64, src: &Path, ext: &str, is_video: bool, mode
     Ok(bytes)
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) {
+pub fn write_atomic(path: &Path, bytes: &[u8]) {
     static N: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
@@ -79,6 +91,10 @@ pub fn render(src: &Path, ext: &str, is_video: bool, mode: Mode) -> Result<Vec<u
         let img = decode(src)?;
         return encode(&resize(img.to_rgb8(), mode)?);
     }
+    let raw = !is_video && crate::raw::is_raw(ext);
+    if raw && let Ok(img) = crate::raw::preview(src) {
+        return encode(&resize(img.to_rgb8(), mode)?);
+    }
     #[cfg(windows)]
     {
         let req = if mode == Mode::Thumb { 768 } else { PREVIEW_LONG as i32 };
@@ -90,6 +106,68 @@ pub fn render(src: &Path, ext: &str, is_video: bool, mode: Mode) -> Result<Vec<u
         return Ok(jpg);
     }
     Err(format!("no decoder for .{ext}"))
+}
+
+/// The editor's source pixels, full resolution and upright, as `SRC1` binary:
+/// magic, width u32, height u32, format u32 (0 = RGBA8 sRGB, 1 = RGB10_A2 linear log, see `raw`), then pixels.
+/// Formats the webview decodes itself (JPEG, PNG, WebP…) never come through here.
+pub fn full_source(src: &Path, ext: &str, max_side: u32) -> Result<Vec<u8>, String> {
+    let max_side = max_side.clamp(256, 32768);
+    if crate::raw::is_raw(ext) {
+        match crate::raw::develop(src, max_side as usize) {
+            Ok(d) => {
+                let mut out = header(d.w as u32, d.h as u32, 1, d.px.len() * 4);
+                for p in d.px {
+                    out.extend_from_slice(&p.to_le_bytes());
+                }
+                return Ok(out);
+            }
+            Err(e) => eprintln!("raw develop {}: {e}", src.display()),
+        }
+    }
+    let img = if rust_decodable(ext) {
+        decode(src)?
+    } else if crate::raw::is_raw(ext) {
+        crate::raw::preview(src)?
+    } else {
+        os_decode(src, max_side)?
+    };
+    let mut rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    if w.max(h) > max_side {
+        let s = max_side as f64 / w.max(h) as f64;
+        let (tw, th) = (((w as f64 * s).round() as u32).max(1), ((h as f64 * s).round() as u32).max(1));
+        let from = fr::images::Image::from_vec_u8(w, h, rgba.into_raw(), fr::PixelType::U8x4).map_err(|e| e.to_string())?;
+        let mut to = fr::images::Image::new(tw, th, fr::PixelType::U8x4);
+        let opts = fr::ResizeOptions::new().resize_alg(fr::ResizeAlg::Convolution(fr::FilterType::CatmullRom));
+        fr::Resizer::new().resize(&from, &mut to, &opts).map_err(|e| e.to_string())?;
+        rgba = image::RgbaImage::from_raw(tw, th, to.into_vec()).ok_or("resize buffer")?;
+    }
+    let (w, h) = rgba.dimensions();
+    let raw = rgba.into_raw();
+    let mut out = header(w, h, 0, raw.len());
+    out.extend_from_slice(&raw);
+    Ok(out)
+}
+
+fn header(w: u32, h: u32, fmt: u32, n: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16 + n);
+    out.extend_from_slice(b"SRC1");
+    for v in [w, h, fmt] {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
+/// HEIC and friends: the OS decoder on Windows, else FFmpeg.
+fn os_decode(src: &Path, max_side: u32) -> Result<DynamicImage, String> {
+    #[cfg(windows)]
+    if let Ok(img) = crate::shell::thumbnail(src, max_side.min(8192) as i32) {
+        return Ok(DynamicImage::ImageRgb8(img));
+    }
+    let scale = format!("scale='if(gt(iw,ih),min({max_side},iw),-2)':'if(gt(iw,ih),-2,min({max_side},ih))'");
+    let jpg = ffmpeg(src, &["0"], &scale, "2").ok_or("no decoder for this format")?;
+    image::load_from_memory(&jpg).map_err(|e| e.to_string())
 }
 
 fn decode(src: &Path) -> Result<DynamicImage, String> {
@@ -128,11 +206,15 @@ fn ffmpeg_frame(src: &Path, is_video: bool, mode: Mode) -> Option<Vec<u8>> {
         Mode::Preview => format!("scale='if(gt(iw,ih),min({PREVIEW_LONG},iw),-2)':'if(gt(iw,ih),-2,min({PREVIEW_LONG},ih))'"),
     };
     let seeks: &[&str] = if is_video { &["1", "0"] } else { &["0"] };
+    ffmpeg(src, seeks, &scale, "4")
+}
+
+fn ffmpeg(src: &Path, seeks: &[&str], scale: &str, q: &str) -> Option<Vec<u8>> {
     for ss in seeks {
         let mut cmd = std::process::Command::new("ffmpeg");
         cmd.args(["-v", "error", "-ss", ss, "-i"])
             .arg(src)
-            .args(["-frames:v", "1", "-vf", &scale, "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", "4", "-"])
+            .args(["-frames:v", "1", "-vf", scale, "-f", "image2pipe", "-vcodec", "mjpeg", "-q:v", q, "-"])
             .stdin(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
         #[cfg(windows)]
