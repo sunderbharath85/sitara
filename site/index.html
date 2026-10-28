@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sitara — a fast, private photo and video gallery</title>
+<meta name="description" content="Sitara reads the folders you choose, builds one timeline of every photo and clip, and keeps everything on your device. No account, no upload, no cloud. Windows, macOS and Linux.">
+<meta name="theme-color" content="#070708">
+<link rel="icon" type="image/png" href="./favicon.png">
+<link rel="canonical" href="https://sunderbharath85.github.io/sitara/">
+
+<meta property="og:type" content="website">
+<meta property="og:title" content="Sitara — a fast, private photo and video gallery">
+<meta property="og:description" content="One timeline of every photo and clip you own. A full non-destructive editor. On-device AI. Nothing leaves your computer.">
+<meta property="og:url" content="https://sunderbharath85.github.io/sitara/">
+<meta property="og:image" content="https://sunderbharath85.github.io/sitara/og.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:site_name" content="Sitara">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300..800&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./style.css">
+
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.13.0/dist/ScrollTrigger.min.js"></script>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.min.js" } }
+</script>
+</head>
+<body>
+
+<!-- ───────────────── loader ───────────────── -->
+<div id="boot" aria-hidden="true">
+  <div class="boot-in">
+    <svg class="boot-star" viewBox="0 0 1024 1024" width="54" height="54" aria-hidden="true">
+      <path d="M512 214 C 538 420, 604 486, 810 512 C 604 538, 538 604, 512 810 C 486 604, 420 538, 214 512 C 420 486, 486 420, 512 214 Z" fill="#ff6b3d"/>
+    </svg>
+    <div class="boot-meta mono"><span id="bootPct">00</span>&thinsp;%</div>
+    <div class="boot-bar"><b></b></div>
+  </div>
+</div>
+
+<!-- ───────────────── webgl ───────────────── -->
+<canvas id="gl" aria-hidden="true"></canvas>
+<div id="scrim" aria-hidden="true"></div>
+
+<!-- ───────────────── chrome ───────────────── -->
+<div id="progress" aria-hidden="true"><b></b></div>
+<div id="cursor" aria-hidden="true"><i></i></div>
+
+<header id="nav">
+  <a class="brand" href="#top" data-mag>
+    <i></i><span>Sitara</span>
+  </a>
+  <nav class="nav-links" aria-label="Sections">
+    <a href="#library" data-mag>Library</a>
+    <a href="#editor" data-mag>Editor</a>
+    <a href="#ai" data-mag>AI</a>
+    <a href="#private" data-mag>Private</a>
+    <a href="#get" data-mag>Install</a>
+  </nav>
+  <div class="nav-right">
+    <span class="nav-ver mono">v0.3.0</span>
+    <a class="btn btn-ghost" href="https://github.com/sunderbharath85/sitara" target="_blank" rel="noopener" data-mag>
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.18-.89-1.18-.73-.5.05-.49.05-.49.81.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.19c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      Source
+    </a>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- ═════════════════ 01 · HERO ═════════════════ -->
+<section id="hero">
+  <div class="hero-grid" aria-hidden="true"></div>
+
+  <div class="hero-in">
+    <div class="eyebrow reveal">
+      <span class="pill-acc">Early development</span>
+      <span class="mono">Windows</span><em>/</em><span class="mono">macOS</span><em>/</em><span class="mono">Linux</span>
+      <em>/</em><span class="mono">Rust&thinsp;+&thinsp;Tauri v2</span>
+    </div>
+
+    <h1 class="display">
+      <span class="line"><span data-split>Every photo you own.</span></span>
+      <span class="line line-acc"><span data-split>None of it ours.</span></span>
+    </h1>
+
+    <p class="lede reveal">
+      Sitara reads the folders you choose, builds <strong>one timeline</strong> of every photo and clip,
+      and keeps everything on your device. No account, no upload, no cloud.
+    </p>
+
+    <div class="hero-cta reveal">
+      <a class="btn btn-acc btn-lg" href="https://github.com/sunderbharath85/sitara/releases" target="_blank" rel="noopener" data-mag>
+        Download
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8m0 0 3.2-3.2M8 10 4.8 6.8M2.5 12.5h11"/></svg>
+      </a>
+      <a class="btn btn-line btn-lg" href="#library" data-mag>See it move</a>
+    </div>
+
+    <dl class="hero-stats reveal">
+      <div><dt class="mono" data-count="100">0</dt><dd>k+ items per<br>library, scrolled flat</dd></div>
+      <div><dt class="mono">0</dt><dd>bytes uploaded.<br>Ever, by design</dd></div>
+      <div><dt class="mono" data-count="20" data-pre="×">0</dt><dd>faster AI on<br>a 3060 than CPU</dd></div>
+      <div><dt class="mono">5<span class="sl">/</span>5</dt><dd>roadmap stages<br>shipped end to end</dd></div>
+    </dl>
+  </div>
+
+  <div class="scroll-cue" aria-hidden="true">
+    <span class="mono">Scroll</span>
+    <i></i>
+  </div>
+
+  <div class="hero-edge mono" aria-hidden="true">
+    <span>GPL&thinsp;-&thinsp;3.0</span>
+    <span>No telemetry</span>
+    <span>Offline after first run</span>
+  </div>
+</section>
+
+<!-- ═════════════════ 02 · THE SCENE ═════════════════ -->
+<section id="scene" aria-label="How a library is built">
+  <div class="scene-steps">
+    <div class="step" data-step="0">
+      <span class="step-no mono">01</span>
+      <h2>Point it at a folder.</h2>
+      <p>Button, suggestion or drag-and-drop. Nothing is copied, nothing is moved. Your files stay exactly where you put them.</p>
+    </div>
+    <div class="step" data-step="1">
+      <span class="step-no mono">02</span>
+      <h2>Rust does the rest.</h2>
+      <p>It indexes in the background and keeps watching. New, edited and deleted files appear on their own — JPEG, PNG, WebP, GIF, BMP, TIFF, HEIC, RAW and video.</p>
+    </div>
+    <div class="step" data-step="2">
+      <span class="step-no mono">03</span>
+      <h2>One timeline. All of it.</h2>
+      <p>Justified rows grouped by month, a year rail down the side, virtual scrolling built for a hundred thousand items and more.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═════════════════ marquee ═════════════════ -->
+<div class="marquee" aria-hidden="true">
+  <div class="marquee-row" data-dir="1">
+    <div class="marquee-in">
+      <span>Trips</span><i>✦</i><span>Places</span><i>✦</i><span>Favorites</span><i>✦</i><span>Videos</span><i>✦</i><span>Screenshots</span><i>✦</i><span>Panoramas</span><i>✦</i><span>Selfies</span><i>✦</i><span>Night</span><i>✦</i><span>On this day</span><i>✦</i><span>Recently added</span><i>✦</i>
+    </div>
+  </div>
+</div>
+
+<!-- ═════════════════ 03 · LIBRARY RAIL ═════════════════ -->
+<section id="library">
+  <div class="sec-head">
+    <span class="ghost" aria-hidden="true">02</span>
+    <div class="sec-title">
+      <div class="kicker"><span class="pill-acc">Library</span><span>Stage 1&thinsp;–&thinsp;2 · shipped</span></div>
+      <h2 class="display-2"><span data-split>The parts you</span><br><span data-split>touch every day.</span></h2>
+    </div>
+    <p class="sec-note">Five surfaces, one index. Drag sideways, or just keep scrolling.</p>
+  </div>
+
+  <div class="rail-wrap">
+    <div class="rail-track">
+
+      <article class="card glass" data-card>
+        <header><span class="mono">01</span><h3>Timeline</h3></header>
+        <div class="card-art" data-art="timeline" aria-hidden="true"></div>
+        <p>Justified photo rows grouped by month, a year/month rail, and virtual scrolling that does not flinch at 100k+ items.</p>
+        <ul class="tags"><li>EXIF orientation</li><li>Disk thumbnail cache</li><li>Live folder watch</li></ul>
+      </article>
+
+      <article class="card glass" data-card>
+        <header><span class="mono">02</span><h3>Viewer</h3></header>
+        <div class="card-art" data-art="viewer" aria-hidden="true"></div>
+        <p>Zooms out of the grid, then wheel or double-click to zoom and drag to pan. Panels show camera, lens, exposure and GPS, a live RGB histogram, the palette and the mood.</p>
+        <ul class="tags"><li>Inline video</li><li>Filmstrip</li><li>Keyboard first</li></ul>
+      </article>
+
+      <article class="card glass" data-card>
+        <header><span class="mono">03</span><h3>Slideshow</h3></header>
+        <div class="card-art" data-art="slideshow" aria-hidden="true"></div>
+        <p>Ken Burns, push, iris, zoom, mosaic and blinds — plus an Auto mode that picks one per photo. Smart portrait pairs, chapter cards and captions.</p>
+        <ul class="tags"><li>On-device soundtrack</li><li>Cuts on the beat</li><li>Scrubber</li></ul>
+      </article>
+
+      <article class="card glass" data-card>
+        <header><span class="mono">04</span><h3>Smart albums</h3></header>
+        <div class="card-art" data-art="albums" aria-hidden="true"></div>
+        <p><b>Trips</b> gathers photos far from your home city by date. <b>Places</b> matches the nearest city offline. Every folder becomes an album by itself.</p>
+        <ul class="tags"><li>No geocoding API</li><li>Your own albums</li><li>Any selection</li></ul>
+      </article>
+
+      <article class="card glass" data-card>
+        <header><span class="mono">05</span><h3>Cleanup</h3></header>
+        <div class="card-art" data-art="cleanup" aria-hidden="true"></div>
+        <p>Exact duplicates byte-for-byte, similar shots by visual fingerprint, possibly blurry photos, old screenshots. Each group gets a best pick scored on sharpness, exposure and resolution.</p>
+        <ul class="tags"><li><kbd>Enter</kbd> recycles the rest</li><li>Always undoable</li></ul>
+      </article>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═════════════════ 04 · EDITOR ═════════════════ -->
+<section id="editor">
+  <span class="ghost ghost-r" aria-hidden="true">03</span>
+
+  <div class="two">
+    <div class="two-copy">
+      <div class="kicker"><span class="pill-acc">Editor</span><span>Press <kbd>E</kbd></span></div>
+      <h2 class="display-2"><span data-split>Develop it.</span><br><span data-split>Never damage it.</span></h2>
+      <p class="lede sm">Edits are stored as data and rendered on the GPU. The original file is never written to, and Revert is one click — forever.</p>
+
+      <div class="acc-list">
+        <details open><summary><span class="mono">01</span>Adjust<i></i></summary>
+          <p>Exposure, contrast, highlights, shadows, whites, blacks, temperature, tint, vibrance, saturation, clarity, dehaze, sharpening, vignette, grain and fade — plus one-click <b>Auto</b>.</p></details>
+        <details><summary><span class="mono">02</span>Looks &amp; Color<i></i></summary>
+          <p>14 built-in styles previewed on your own photo with a strength slider, and they sit <em>under</em> your sliders instead of replacing them. An 8-band hue/sat/lum mixer, black &amp; white with its own mix, three-wheel grading, RGB and per-channel curves.</p></details>
+        <details><summary><span class="mono">03</span>Masks &amp; Heal<i></i></summary>
+          <p>Linear gradients, radial masks and a brush, each with its own adjustments. Click a blemish and a matching patch is found and colour-matched automatically; clone mode is there too.</p></details>
+        <details><summary><span class="mono">04</span>RAW<i></i></summary>
+          <p>Canon, Nikon, Sony, Fujifilm, DNG and more are developed in Rust straight from the sensor data, so highlights still have headroom to recover.</p></details>
+      </div>
+
+      <p class="fineprint">Before/after split, clipping warnings, a live histogram, unlimited undo, copy/paste settings between photos, and export to JPEG, PNG or WebP keeping camera details — and location only if you choose.</p>
+    </div>
+
+    <div class="two-art">
+      <div class="mock glass" data-mock="editor">
+        <div class="mock-bar">
+          <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="mono mock-name">DSC_4417.NEF</span>
+          <span class="mono mock-badge">RAW · non-destructive</span>
+        </div>
+        <div class="mock-body">
+          <div class="mock-stage">
+            <canvas class="ba-after" width="760" height="500" aria-label="Edited rendering"></canvas>
+            <canvas class="ba-before" width="760" height="500" aria-label="Original rendering"></canvas>
+            <div class="ba-handle" role="slider" tabindex="0" aria-label="Before and after split" aria-valuemin="0" aria-valuemax="100" aria-valuenow="55">
+              <i></i><span class="mono">drag</span>
+            </div>
+            <span class="tag-before mono">Original</span>
+            <span class="tag-after mono">Edited</span>
+            <div class="mock-hist" aria-hidden="true"><canvas width="220" height="64"></canvas></div>
+          </div>
+          <aside class="mock-panel">
+            <div class="panel-tabs mono"><b>Adjust</b><span>Looks</span><span>Color</span><span>Curves</span></div>
+            <div class="sliders"></div>
+            <div class="panel-foot mono"><span>Auto</span><span>Reset</span></div>
+          </aside>
+        </div>
+      </div>
+      <p class="caption mono">Interface recreated from the app's own design tokens; imagery generated in-browser.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═════════════════ 05 · AI ═════════════════ -->
+<section id="ai">
+  <div class="sec-head center">
+    <span class="ghost ghost-c" aria-hidden="true">04</span>
+    <div class="kicker just-center"><span class="pill-acc">On-device AI</span><span>Stage 4&thinsp;–&thinsp;5 · shipped</span></div>
+    <h2 class="display-2 center"><span data-split>Say it in words.</span><br><span data-split>It stays on your machine.</span></h2>
+    <p class="lede center">Each model downloads once from its public source, is checked against a pinned SHA-256 digest, and then runs offline. Turn a feature off and its models and everything they learned are deleted.</p>
+  </div>
+
+  <div class="prompt-box glass">
+    <div class="prompt-head mono"><span class="pill-acc">A</span>Describe an edit</div>
+    <div class="prompt-line">
+      <span class="caret" aria-hidden="true"></span><span id="typed" aria-live="polite"></span>
+    </div>
+    <div class="prompt-out" id="chips" aria-hidden="true"></div>
+  </div>
+
+  <div class="ai-grid">
+    <article class="ai glass" data-tilt><h3>Restore an old photo</h3><p>One click removes grain, brings blurred faces back, adds natural colour to black-and-white and sepia prints, and enlarges small scans.</p></article>
+    <article class="ai glass" data-tilt><h3>Remove objects</h3><p>Paint over a person, a sign or a speck and it is filled in from its surroundings.</p></article>
+    <article class="ai glass" data-tilt><h3>Select subject, background, sky</h3><p>Masks drawn by AI, each with its own full set of sliders.</p></article>
+    <article class="ai glass" data-tilt><h3>Background blur</h3><p>Depth-aware lens blur that keeps the subject sharp.</p></article>
+    <article class="ai glass" data-tilt><h3>Denoise &amp; Upscale</h3><p>Real camera noise removed at full resolution. ×4 up to 1600&thinsp;px, ×2 up to 3200&thinsp;px, opened at 100% with before and after.</p></article>
+    <article class="ai glass" data-tilt><h3>Search by meaning</h3><p>Type “sunset over water” or “birthday cake” and find photos with no tags at all. CLIP, about 155&thinsp;MB.</p></article>
+    <article class="ai glass" data-tilt><h3>People</h3><p>Faces found and grouped by person. Name someone once, merge look-alikes, drop the wrong matches. YuNet + SFace, about 39&thinsp;MB.</p></article>
+    <article class="ai glass" data-tilt><h3>Smart enhance</h3><p>Automatic tone, plus brighter faces and a richer sky when those models are present.</p></article>
+  </div>
+
+  <div class="gpu glass">
+    <div class="gpu-copy">
+      <div class="kicker"><span class="pill-acc">GPU</span></div>
+      <h3>It uses the graphics card you already paid for.</h3>
+      <p>Any DirectX 12 GPU on Windows — NVIDIA, AMD, Intel, Qualcomm — and Core ML on Apple silicon. Models a GPU cannot run stay on the processor, and one switch in Folders keeps all AI on the CPU.</p>
+    </div>
+    <div class="gpu-bars" aria-label="Relative speed of denoise, upscale, face restoration and subject selection">
+      <div class="bar-row"><span class="mono bl">CPU</span><div class="bar"><b data-w="7"></b></div><span class="mono bv">1×</span></div>
+      <div class="bar-row acc"><span class="mono bl">RTX 3060</span><div class="bar"><b data-w="100"></b></div><span class="mono bv" data-count="20" data-post="×">0</span></div>
+      <p class="mono gpu-note">denoise · upscale · face restoration · subject selection</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═════════════════ 06 · PRIVACY ═════════════════ -->
+<section id="private">
+  <div class="priv-in">
+    <span class="ghost ghost-c" aria-hidden="true">05</span>
+    <div class="kicker just-center"><span class="pill-acc">Private by construction</span></div>
+    <h2 class="display-2 center big">
+      <span data-split>Your photos never</span><br><span data-split>leave the room.</span>
+    </h2>
+
+    <div class="priv-diagram" aria-hidden="true">
+      <div class="node node-dev glass"><span class="mono">Your device</span><b>Index · thumbnails · edits · models · faces</b></div>
+      <div class="wire"><span class="mono">nothing</span></div>
+      <div class="node node-cloud"><span class="mono">Cloud</span><b>—</b></div>
+    </div>
+
+    <div class="priv-cards">
+      <div class="pc"><span class="mono">01</span><h4>No account</h4><p>There is nothing to sign up for, so there is nothing to sign in to.</p></div>
+      <div class="pc"><span class="mono">02</span><h4>No upload</h4><p>Photos are read from your folders and written nowhere else. Edits live beside the index, as data.</p></div>
+      <div class="pc"><span class="mono">03</span><h4>Verifiable builds</h4><p><code>gh attestation verify &lt;file&gt; --repo sunderbharath85/sitara</code> proves a file came from this repository's build.</p></div>
+      <div class="pc"><span class="mono">04</span><h4>Pinned models</h4><p>The ONNX Runtime and every model are checked against pinned SHA-256 digests on first download, then used offline.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═════════════════ 07 · KEYBOARD ═════════════════ -->
+<section id="keys">
+  <div class="sec-head">
+    <span class="ghost" aria-hidden="true">06</span>
+    <div class="sec-title">
+      <div class="kicker"><span class="pill-acc">Keyboard</span></div>
+      <h2 class="display-2"><span data-split>Hands stay home.</span></h2>
+    </div>
+    <p class="sec-note">The whole app is reachable without the mouse. A selection of it:</p>
+  </div>
+
+  <div class="keys-grid">
+    <div class="kg glass"><h4 class="mono">Everywhere</h4>
+      <dl>
+        <div><dt><kbd>Ctrl</kbd><kbd>K</kbd> <em>or</em> <kbd>/</kbd></dt><dd>Search and commands</dd></div>
+        <div><dt><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd><kbd>4</kbd></dt><dd>Library, Albums, Cleanup, Folders</dd></div>
+        <div><dt><kbd>P</kbd></dt><dd>Slideshow of selection, album or everything</dd></div>
+        <div><dt><kbd>F</kbd><kbd>A</kbd><kbd>Del</kbd></dt><dd>Favourite, add to album, Recycle Bin</dd></div>
+      </dl>
+    </div>
+    <div class="kg glass"><h4 class="mono">Viewer &amp; slideshow</h4>
+      <dl>
+        <div><dt><kbd>←</kbd><kbd>→</kbd></dt><dd>Navigate</dd></div>
+        <div><dt><kbd>I</kbd><kbd>0</kbd></dt><dd>Info panels, reset zoom</dd></div>
+        <div><dt><kbd>Space</kbd><kbd>T</kbd><kbd>M</kbd></dt><dd>Pause, transition, music</dd></div>
+        <div><dt><kbd>S</kbd><kbd>F</kbd></dt><dd>Style panel, fullscreen</dd></div>
+      </dl>
+    </div>
+    <div class="kg glass"><h4 class="mono">Editor</h4>
+      <dl>
+        <div><dt><kbd>1</kbd>–<kbd>4</kbd> <kbd>R</kbd><kbd>M</kbd><kbd>H</kbd></dt><dd>Looks, Adjust, Color, Curves, Crop, Masks, Heal</dd></div>
+        <div><dt><kbd>\</kbd> <em>hold</em></dt><dd>Original</dd></div>
+        <div><dt><kbd>Y</kbd><kbd>J</kbd><kbd>O</kbd><kbd>Z</kbd></dt><dd>Split, clipping, mask overlay, 100%</dd></div>
+        <div><dt><kbd>Ctrl</kbd><kbd>Z</kbd> · <kbd>Ctrl</kbd><kbd>E</kbd></dt><dd>Undo, export</dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ═════════════════ 08 · ROADMAP ═════════════════ -->
+<section id="road">
+  <div class="sec-head">
+    <span class="ghost" aria-hidden="true">07</span>
+    <div class="sec-title">
+      <div class="kicker"><span class="pill-acc">Roadmap</span><span>All five stages work end to end</span></div>
+      <h2 class="display-2"><span data-split>Where it stands.</span></h2>
+    </div>
+    <p class="sec-note">The foundation, smart albums, cleanup, the editor and on-device AI all work on Windows; macOS and Linux builds run in CI. Expect rough edges.</p>
+  </div>
+
+  <ol class="road">
+    <li><span class="mono">01</span><h4>Foundation</h4><p>Indexing and live watching, EXIF, thumbnail cache, timeline, viewer, albums, slideshow, installers.</p><em class="mono">shipped</em></li>
+    <li><span class="mono">02</span><h4>Smart albums + cleanup</h4><p>Trips and places, duplicate and blurry-shot finder, safe cleanup.</p><em class="mono">shipped</em></li>
+    <li><span class="mono">03</span><h4>Editor</h4><p>Non-destructive essentials, looks, curves, colour mixer and grading, masks, healing, RAW, export.</p><em class="mono">shipped</em></li>
+    <li><span class="mono">04</span><h4>On-device AI</h4><p>Search by meaning (CLIP), faces and people. Models download on demand and run offline.</p><em class="mono">shipped</em></li>
+    <li><span class="mono">05</span><h4>AI editing</h4><p>Describe an edit, restore, remove objects, AI masks, background blur, denoise, upscale, smart enhance.</p><em class="mono">shipped</em></li>
+  </ol>
+</section>
+
+<!-- ═════════════════ 09 · DOWNLOAD ═════════════════ -->
+<section id="get">
+  <div class="get-in">
+    <h2 class="display center"><span data-split>Take it home.</span></h2>
+    <p class="lede center">Free software under GPL-3.0. Built with Rust and React on Tauri&nbsp;v2.</p>
+
+    <div class="plat">
+      <a class="pcard glass" href="https://github.com/sunderbharath85/sitara/releases" target="_blank" rel="noopener">
+        <h4>Windows</h4><span class="mono">x64 · Arm</span>
+        <p>Until code signing is active, SmartScreen may warn about an unknown publisher — choose <b>More info → Run anyway</b>.</p>
+        <em class="mono">Installer ↗</em>
+      </a>
+      <a class="pcard glass" href="https://github.com/sunderbharath85/sitara/releases" target="_blank" rel="noopener">
+        <h4>macOS</h4><span class="mono">Apple silicon</span>
+        <p>Builds are not notarised yet. Open the app once, then <b>System Settings → Privacy &amp; Security → Open Anyway</b>.</p>
+        <em class="mono">Installer ↗</em>
+      </a>
+      <a class="pcard glass" href="https://github.com/sunderbharath85/sitara/releases" target="_blank" rel="noopener">
+        <h4>Linux</h4><span class="mono">x64 · Arm</span>
+        <p>Built in CI alongside the other platforms. FFmpeg, if you have it, is used for video and RAW thumbnails.</p>
+        <em class="mono">Installer ↗</em>
+      </a>
+    </div>
+
+    <div class="verify glass">
+      <span class="mono vlabel">Verify any download</span>
+      <code class="mono">gh attestation verify &lt;file&gt; --repo sunderbharath85/sitara</code>
+      <button class="copy mono" type="button" data-copy="gh attestation verify <file> --repo sunderbharath85/sitara">Copy</button>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="foot-top">
+    <a class="brand big" href="#top" data-mag><i></i><span>Sitara</span></a>
+    <div class="foot-links">
+      <a href="https://github.com/sunderbharath85/sitara" target="_blank" rel="noopener" data-mag>Repository</a>
+      <a href="https://github.com/sunderbharath85/sitara/releases" target="_blank" rel="noopener" data-mag>Releases</a>
+      <a href="https://github.com/sunderbharath85/sitara/blob/main/docs/ARCHITECTURE.md" target="_blank" rel="noopener" data-mag>Architecture</a>
+      <a href="https://github.com/sunderbharath85/sitara/issues" target="_blank" rel="noopener" data-mag>Issues</a>
+      <a href="https://tauri.app" target="_blank" rel="noopener" data-mag>Tauri</a>
+    </div>
+  </div>
+  <div class="foot-bot mono">
+    <span>© Sitara · GPL-3.0-or-later</span>
+    <span>No analytics on this page</span>
+    <span>Imagery generated in your browser</span>
+  </div>
+</footer>
+
+</main>
+
+<script type="module" src="./main.js"></script>
+</body>
+</html>
