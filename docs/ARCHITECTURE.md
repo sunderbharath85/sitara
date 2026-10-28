@@ -113,17 +113,27 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
   - denoise: NAFNet-SIDD
   - upscale: Real-ESRGAN general-x4v3
   - depth: Depth Anything V2 Small
+  - colorize: DDColor tiny
+  - restore: GFPGAN v1.4, with YuNet to find faces (shared with People, so removing either pack keeps it while the other needs it)
 
   The editor offers each download where it's needed. The Folders card lists what is installed and deletes it on request.
 - **Pixels in, pixels out.** `ai_op` runs a model on RGBA the editor sends and returns RGBA, a mask, or JSON.
   - The editor takes the pixels off the GPU (`Renderer.extract`), decoded and upright, so RAW, HEIC and TIFF work the same as JPEG.
   - For RAW, highlights above white are rolled off before a model sees them.
 - **Results are layers.** `ai_layer_put` stores a PNG content-addressed by its BLAKE3 hash in `%LOCALAPPDATA%\app.sitara.photos\layers`, and `thumb://localhost/layer/{hash}` serves it. Edit stacks refer to layers by hash; on startup, layers no saved stack mentions are deleted. Uses of layers in the stack:
-  - `ai.base`: a denoised or upscaled copy that stands in for the source. Upscaling changes the working size; masks and spots don't need adjusting, because they live in p-space.
+  - `ai.base`: a denoised, upscaled or restored copy that stands in for the source. A base of another size replaces the source outright and changes the working size; masks and spots don't need adjusting, because they live in p-space.
   - `ai.patches`: removal results. Each is RGBA with a feathered alpha over a source-uv rectangle, composited in order after healing.
   - `ai.blur`: depth and subject masks for lens blur. The blur radius grows behind the focus plane (the subject's depth), and samples skip the subject so it doesn't bleed. Removing an object recomputes these maps.
   - AI masks (`kind: "ai"`): subject or sky as a grayscale layer, copied into the mask atlas like a brush mask.
 - **Render order:** source → base blend → heal + patches → background blur → develop.
+- **Upscale** runs Real-ESRGAN ×4 in 256 px tiles with 24 px of context each. Photos up to 1600 px get ×4; up to 3200 px, a half-size copy is enlarged ×4 for an overall ×2.
+- **Restore an old photo** (`aiops.restore`) chains models on the source (at most 4096 px):
+  1. denoise (NAFNet), if installed;
+  2. colorize (DDColor), only if the photo is black-and-white or one tint all over. DDColor predicts the a/b chroma at 512 px; luminance stays at full resolution;
+  3. restore faces (GFPGAN): each face YuNet finds (score ≥ 0.8) is aligned to the FFHQ five-point template by a least-squares similarity transform, restored at 512, and pasted back with a feathered edge;
+  4. upscale ×4, if the result is still 1024 px or smaller.
+
+  The result becomes `ai.base` (kind `restore`), and auto tone is applied without vibrance, since the source's color says nothing about the colorized result.
 - **Describe an edit** (`edit/describe.ts`) is rule-based and fully offline.
   - Phrases become slider changes, scaled by "a bit" or "very".
   - Words about the sky or faces become masks: sky segmentation, or radial masks at faces YuNet finds.
@@ -146,7 +156,7 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
 | Renders of edited photos | `%LOCALAPPDATA%\app.sitara.photos\thumbs\et\` and `ep\` |
 | Face portraits | `%LOCALAPPDATA%\app.sitara.photos\thumbs\f\` |
 | AI models and runtime (optional) | `%LOCALAPPDATA%\app.sitara.photos\models\` |
-| AI edit layers (removals, masks, denoise/upscale) | `%LOCALAPPDATA%\app.sitara.photos\layers\` |
+| AI edit layers (removals, masks, denoise/upscale/restore) | `%LOCALAPPDATA%\app.sitara.photos\layers\` |
 
 ## Developing without Tauri
 

@@ -132,16 +132,21 @@ export async function depth(r: Renderer, subject: MaskData | null): Promise<{ la
   return { layer: await keepMask(r, w, h, d), focus };
 }
 
-/** Denoise (full resolution) or upscale ×4, tile by tile. */
-export async function tiled(r: Renderer, kind: "denoise" | "upscale", progress: (f: number) => void): Promise<string> {
-  const [W, H] = r.sourceSize;
+/** RGBA pixels in memory. */
+export interface Px {
+  w: number;
+  h: number;
+  data: Uint8Array;
+}
+
+/** Run a tiled model (denoise, or 4× upscale) over pixels; each tile carries some context it then drops. */
+async function overTiles(src: Px, kind: "denoise" | "upscale", progress: (f: number) => void): Promise<Px> {
   const scale = kind === "upscale" ? 4 : 1;
   const tile = kind === "upscale" ? 256 : 512,
     pad = 24;
-  const c = document.createElement("canvas");
-  c.width = W * scale;
-  c.height = H * scale;
-  const cx = c.getContext("2d")!;
+  const { w: W, h: H } = src;
+  const OW = W * scale;
+  const out = new Uint8Array(OW * H * scale * 4);
   const nx = Math.ceil(W / tile),
     ny = Math.ceil(H / tile);
   let done = 0;
@@ -151,18 +156,90 @@ export async function tiled(r: Renderer, kind: "denoise" | "upscale", progress: 
         y0 = ty * tile;
       const ix0 = Math.max(0, x0 - pad),
         iy0 = Math.max(0, y0 - pad);
-      const ix1 = Math.min(W, x0 + tile + pad),
-        iy1 = Math.min(H, y0 + tile + pad);
-      const w = ix1 - ix0,
-        h = iy1 - iy0;
-      const px = r.extract("orig", [ix0 / W, iy0 / H, w / W, h / H], w, h);
-      const out = new Uint8ClampedArray(await op({ op: kind, w, h }, px));
-      const img = new ImageData(out, w * scale, h * scale);
-      // keep only the tile's own pixels (the padding was context for the model)
-      cx.putImageData(img, ix0 * scale, iy0 * scale, (x0 - ix0) * scale, (y0 - iy0) * scale, Math.min(tile, W - x0) * scale, Math.min(tile, H - y0) * scale);
+      const w = Math.min(W, x0 + tile + pad) - ix0,
+        h = Math.min(H, y0 + tile + pad) - iy0;
+      const part = new Uint8Array(w * h * 4);
+      for (let y = 0; y < h; y++) part.set(src.data.subarray(((iy0 + y) * W + ix0) * 4, ((iy0 + y) * W + ix0 + w) * 4), y * w * 4);
+      const res = new Uint8Array(await op({ op: kind, w, h }, part));
+      const tw = Math.min(tile, W - x0) * scale,
+        th = Math.min(tile, H - y0) * scale;
+      const ox = (x0 - ix0) * scale,
+        oy = (y0 - iy0) * scale;
+      for (let y = 0; y < th; y++) {
+        const from = ((oy + y) * w * scale + ox) * 4;
+        out.set(res.subarray(from, from + tw * 4), ((y0 * scale + y) * OW + x0 * scale) * 4);
+      }
       progress(++done / (nx * ny));
     }
-  return keep(r, c);
+  return { w: OW, h: H * scale, data: out };
+}
+
+const keepPx = (r: Renderer, p: Px) => keep(r, canvasOf(p.w, p.h, new Uint8ClampedArray(p.data.buffer as ArrayBuffer, p.data.byteOffset, p.data.length)));
+
+/** The untouched source, upright sRGB, scaled by `k`. */
+function original(r: Renderer, k: number): Px {
+  const [W, H] = r.sourceSize;
+  const w = Math.max(1, Math.round(W * k)),
+    h = Math.max(1, Math.round(H * k));
+  return { w, h, data: r.extract("orig", [0, 0, 1, 1], w, h) };
+}
+
+/** Denoise at full resolution, or upscale (×4, or ×2 by enlarging a half-size copy), tile by tile. */
+export async function tiled(r: Renderer, kind: "denoise" | "upscale", progress: (f: number) => void, factor: 2 | 4 = 4): Promise<{ layer: string; w: number; h: number }> {
+  const out = await overTiles(original(r, kind === "upscale" && factor === 2 ? 0.5 : 1), kind, progress);
+  return { layer: await keepPx(r, out), w: out.w, h: out.h };
+}
+
+/** Black and white, or one tint all over (sepia, faded prints)? Those get colorized. */
+export function monochrome(p: Px): boolean {
+  let n = 0,
+    sa = 0,
+    sb = 0,
+    mag = 0;
+  const step = Math.max(1, Math.floor((p.w * p.h) / 40000));
+  for (let i = 0; i < p.w * p.h; i += step) {
+    const r = p.data[i * 4] / 255,
+      g = p.data[i * 4 + 1] / 255,
+      b = p.data[i * 4 + 2] / 255;
+    const a = r - g,
+      c = (r + g) / 2 - b;
+    sa += a;
+    sb += c;
+    mag += Math.hypot(a, c);
+    n++;
+  }
+  const meanMag = mag / n,
+    coherent = Math.hypot(sa / n, sb / n) / Math.max(1e-6, meanMag);
+  return meanMag < 0.035 || (meanMag < 0.16 && coherent > 0.8);
+}
+
+/** Old photo to new: remove grain, add color to black and white, restore faces, enlarge small prints. */
+export async function restore(r: Renderer, has: (k: string) => boolean, progress: (f: number) => void): Promise<{ layer: string; w: number; h: number; steps: string[] }> {
+  const [W, H] = r.sourceSize;
+  // colorize and faces work at any size; denoise is the slow part, so very large scans are worked on at 4096
+  let px = original(r, Math.min(1, 4096 / Math.max(W, H)));
+  const steps: string[] = [];
+  if (has("denoise")) {
+    px = await overTiles(px, "denoise", (f) => progress(0.05 + f * 0.3));
+    steps.push("grain removed");
+  }
+  progress(0.4);
+  if (has("colorize") && monochrome(px)) {
+    px = { ...px, data: new Uint8Array(await op({ op: "colorize", w: px.w, h: px.h }, px.data)) };
+    steps.push("colorized");
+  }
+  progress(0.55);
+  if (has("restore")) {
+    px = { ...px, data: new Uint8Array(await op({ op: "restore_faces", w: px.w, h: px.h }, px.data)) };
+    steps.push("faces restored");
+  }
+  progress(0.7);
+  if (has("upscale") && Math.max(px.w, px.h) <= 1024) {
+    px = await overTiles(px, "upscale", (f) => progress(0.7 + f * 0.25));
+    steps.push(`enlarged to ${px.w} × ${px.h}`);
+  }
+  progress(0.97);
+  return { layer: await keepPx(r, px), w: px.w, h: px.h, steps };
 }
 
 /** Face boxes (normalized to the photo) for face-aware edits. */

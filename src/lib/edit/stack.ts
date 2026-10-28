@@ -173,7 +173,7 @@ export interface Patch {
 }
 export interface AiEdits {
   /** A denoised or upscaled copy that stands in for the source. */
-  base: { kind: "denoise" | "upscale"; layer: string; amount: number } | null;
+  base: { kind: "denoise" | "upscale" | "restore"; layer: string; amount: number } | null;
   patches: Patch[];
   /** Background blur from a depth map, sparing the subject. */
   blur: { depth: string; subject: string | null; amount: number; focus: number } | null;
@@ -255,7 +255,7 @@ export function summary(s: Stack): string[] {
   if (s.masks.length) out.push(s.masks.length === 1 ? "1 mask" : `${s.masks.length} masks`);
   if (s.heal.length) out.push(s.heal.length === 1 ? "1 fix" : `${s.heal.length} fixes`);
   if (s.ai.patches.length) out.push(s.ai.patches.length === 1 ? "1 removal" : `${s.ai.patches.length} removals`);
-  if (s.ai.base) out.push(s.ai.base.kind === "denoise" ? "Denoised" : "Upscaled ×4");
+  if (s.ai.base) out.push({ denoise: "Denoised", upscale: "Upscaled", restore: "Restored" }[s.ai.base.kind]);
   if (s.ai.blur) out.push("Background blur");
   return out;
 }

@@ -90,6 +90,8 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
   const [erase, setEraseS] = useState({ on: false, size: 0.03 });
   const [eraseStrokes, setEraseStrokes] = useState<Stroke[]>([]);
   const [dims, setDims] = useState("");
+  // after an upscale or restore: the size to show at 100% once it is laid out
+  const [zoomNext, setZoomNext] = useState<{ w: number; h: number } | null>(null);
   const dimsRef = useRef("");
   const drawRef = useRef<() => void>(() => {});
   const alt = useRef(false);
@@ -477,18 +479,35 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
     if (a === "blur") return runAi("Reading depth", addBlur);
     if (a === "denoise")
       return runAi("Denoising", async (p) => {
-        const layer = await aiops.tiled(r, "denoise", p);
+        const { layer } = await aiops.tiled(r, "denoise", p);
         up((s) => void (s.ai.base = { kind: "denoise", layer, amount: 100 }));
       });
     if (a === "upscale") {
       const [w, h] = r.sourceSize;
-      if (Math.max(w, h) > 1600) return toast("Upscale is for small photos, up to 1600 px on the long side");
-      return runAi("Upscaling", async (p) => {
-        const layer = await aiops.tiled(r, "upscale", p);
-        up((s) => void (s.ai.base = { kind: "upscale", layer, amount: 100 }));
-        toast(`Upscaled to ${w * 4} × ${h * 4}`);
+      const long = Math.max(w, h);
+      if (long > 3200) return toast("This photo is already large; upscaling works up to 3200 px on the long side");
+      const f = long <= 1600 ? 4 : 2;
+      return runAi(`Upscaling ×${f}`, async (p) => {
+        const res = await aiops.tiled(r, "upscale", p, f);
+        up((s) => void (s.ai.base = { kind: "upscale", layer: res.layer, amount: 100 }));
+        setZoomNext(res);
+        toast(`Upscaled ×${f} to ${res.w} × ${res.h} · showing 100% with before and after`);
       });
     }
+    if (a === "restore")
+      return runAi("Restoring", async (p) => {
+        const res = await aiops.restore(r, packOn, p);
+        up((s) => {
+          s.ai.base = { kind: "restore", layer: res.layer, amount: 100 };
+          // tone only: the source's color says nothing about the colorized result
+          if (small.current) {
+            const { vibrance: _, ...tone } = autoTone(small.current, r.enc);
+            Object.assign(s.adj, tone, { clarity: 8 });
+          }
+        });
+        setZoomNext(res);
+        toast(res.steps.length ? `Restored · ${res.steps.join(", ")}` : "Restored the tone · download the restore models for more");
+      });
     if (a === "enhance")
       return runAi("Enhancing", async () => {
         if (small.current) {
@@ -529,7 +548,7 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
             else notes.push("blur needs the Depth and Subject models");
           } else if (need === "denoise") {
             if (packOn("denoise")) {
-              const layer = await aiops.tiled(r, "denoise", () => {});
+              const { layer } = await aiops.tiled(r, "denoise", () => {});
               up((s) => void (s.ai.base = { kind: "denoise", layer, amount: 100 }));
             } else notes.push("denoise needs its model");
           }
@@ -658,6 +677,15 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
     setView(clampPan(nv, { w: L.rect.w * k, h: L.rect.h * k }, stage));
   };
   const oneToOne = L ? 1 / dpr / L.fit : 1;
+
+  // show the new detail at 100%, with before/after
+  useEffect(() => {
+    if (!zoomNext || !L || R.current?.W !== zoomNext.w || R.current?.H !== zoomNext.h) return;
+    setZoomNext(null);
+    setView({ z: Math.max(1, 1 / dpr / L.fit), x: 0, y: 0 });
+    setSplit(stage.w / 2);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoomNext, L]);
 
   const copySettings = () => {
     const s = stackRef.current;

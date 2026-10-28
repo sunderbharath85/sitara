@@ -302,7 +302,9 @@ export class Renderer {
     this.baseKey = key;
     this.healKey = this.lensKey = "";
     this.blurOk = false;
-    const [w, h] = b?.kind === "upscale" && L ? [L.w, L.h] : [this.srcW, this.srcH];
+    // a base at another size (upscaled, restored and enlarged) replaces the source outright
+    const resized = !!L && (L.w !== this.srcW || L.h !== this.srcH);
+    const [w, h] = resized ? [L.w, L.h] : [this.srcW, this.srcH];
     if (!b || !L) {
       this.drop(this.based);
       this.based = null;
@@ -329,7 +331,7 @@ export class Renderer {
     gl.uniform1i(this.loc(pr, "uBase"), 1);
     gl.activeTexture(gl.TEXTURE0);
     gl.uniform1i(this.loc(pr, "uEnc"), this.enc);
-    gl.uniform1f(this.loc(pr, "uAmt"), b.kind === "upscale" ? 1 : b.amount / 100);
+    gl.uniform1f(this.loc(pr, "uAmt"), resized ? 1 : b.amount / 100);
     gl.uniform2f(this.loc(pr, "uSize"), w, h);
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);

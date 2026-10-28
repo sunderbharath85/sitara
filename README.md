@@ -44,11 +44,12 @@ Sitara reads the folders you choose, builds one timeline of every photo and clip
   - **Export** a JPEG, PNG or WebP copy at full or reduced size, keeping camera details and (only if you choose) location.
 - **AI editing** (the editor's AI tool, `A`). Everything runs on your computer, and each model downloads only the first time you use it:
   - **Describe an edit:** type "warmer, a bit moodier, bluer sky" or "brighten her face and blur the background". Plain words become slider changes, sky and face masks, blur or denoise, and styles are matched to a look.
+  - **Restore an old photo:** one click removes grain, brings blurred faces back, adds natural color to black-and-white and sepia prints, and enlarges small scans.
   - **Remove objects:** paint over a person, sign or speck, and it's filled from its surroundings.
   - **Select subject, background or sky:** masks drawn by AI, each with its own sliders.
   - **Background blur:** depth-aware lens blur that keeps the subject sharp.
   - **Denoise:** removes real camera noise at full resolution.
-  - **Upscale ×4:** for small or old photos.
+  - **Upscale:** ×4 for photos up to 1600 px, ×2 up to 3200 px. The result opens at 100% with before and after.
   - **Smart enhance:** automatic tone, plus brighter faces and a richer sky when those models are present.
   - Like every edit, these are non-destructive: AI results are kept as separate layers, so you can undo or revert them.
 - **Albums:** every folder becomes an album automatically; make your own from any selection.
@@ -86,7 +87,7 @@ Sitara reads the folders you choose, builds one timeline of every photo and clip
 | 2. Smart albums + cleanup ✅ | Trips and places, duplicate and blurry-shot finder, safe cleanup |
 | 3. Editor ✅ | Non-destructive essentials, looks, curves, color mixer and grading, masks, healing, RAW, export |
 | 4. On-device AI ✅ | Search by meaning (CLIP), faces and people. Models download on demand and run offline |
-| 5. AI editing ✅ | Describe an edit, remove objects, AI masks, background blur, denoise, upscale, smart enhance. Every model is on demand |
+| 5. AI editing ✅ | Describe an edit, restore old photos, remove objects, AI masks, background blur, denoise, upscale, smart enhance. Every model is on demand |
 
 ## Install
 
@@ -134,5 +135,7 @@ On-device AI, each downloaded only when you turn a feature on:
 - [NAFNet](https://github.com/megvii-research/NAFNet) (MIT)
 - [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) (BSD-3-Clause)
 - [Depth Anything V2 Small](https://github.com/DepthAnything/Depth-Anything-V2) (Apache-2.0)
+- [DDColor](https://github.com/piddnad/DDColor) (Apache-2.0)
+- [GFPGAN](https://github.com/TencentARC/GFPGAN) v1.4 (Apache-2.0; parts are under NVIDIA's non-commercial StyleGAN2 license, and it was trained on FFHQ, CC BY-NC-SA 4.0. Fine for personal use; check before using restored faces commercially)
 
  RAW decoding: [rawler](https://github.com/dnglab/dnglab) (LGPL-2.1). Place names: [GeoNames](https://www.geonames.org) cities database, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Rebuild the embedded copy with `scripts/geonames.py`.

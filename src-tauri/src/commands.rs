@@ -519,6 +519,8 @@ pub async fn ai_op(s: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> 
             "depth" => edit::depth(&ai, &rgb(&body[..px * 4])?)?.into_raw(),
             "denoise" => rgba(edit::denoise(&ai, &rgb(&body[..px * 4])?)?),
             "upscale" => rgba(edit::upscale(&ai, &rgb(&body[..px * 4])?)?),
+            "colorize" => rgba(edit::colorize(&ai, &rgb(&body[..px * 4])?)?),
+            "restore_faces" => rgba(edit::restore_faces(&ai, &rgb(&body[..px * 4])?)?.0),
             "faces" => serde_json::to_vec(&edit::faces(&ai, &rgb(&body[..px * 4])?)?).map_err(e)?,
             "rank" => {
                 let imgs = (0..n).map(|k| rgb(&body[k * px * 4..(k + 1) * px * 4])).collect::<R<Vec<_>>>()?;

@@ -179,8 +179,35 @@ const DEPTH: [Asset; 1] = [Asset {
     member: None,
 }];
 
+const COLORIZE: [Asset; 1] = [Asset {
+    // DDColor-tiny (Apache-2.0): color for black-and-white photos
+    file: "ddcolor.onnx",
+    url: "https://huggingface.co/edgetools/ddcolor/resolve/main/ddcolor-tiny-fp16.onnx",
+    sha256: "2653da00dc15e54a45e5200b61dbf82ee9ceaf56b02bb9b9657569ac775e82e6",
+    size: 135_444_402,
+    member: None,
+}];
+/// GFPGAN v1.4 (Apache-2.0, with some upstream components under non-commercial terms) restores faces; it
+/// shares YuNet with People to find them.
+const RESTORE: [Asset; 2] = [
+    Asset {
+        file: "gfpgan.onnx",
+        url: "https://huggingface.co/HowToSD/GFPGAN-ONNX/resolve/main/GFPGANv1.4.onnx",
+        sha256: "15c36ba1a8304e077a9d99954427eac3fb604bb790636dd5e34e72cdeb0830d8",
+        size: 340_357_025,
+        member: None,
+    },
+    Asset {
+        file: "yunet.onnx",
+        url: "https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx",
+        sha256: "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+        size: 232_589,
+        member: None,
+    },
+];
+
 /// Every optional pack: key, display name, files.
-const PACKS: [(&str, &str, &[Asset]); 8] = [
+const PACKS: [(&str, &str, &[Asset]); 10] = [
     ("search", "Search model", &SEARCH),
     ("people", "Face models", &PEOPLE),
     ("erase", "Remove objects model", &ERASE),
@@ -189,6 +216,8 @@ const PACKS: [(&str, &str, &[Asset]); 8] = [
     ("denoise", "Denoise model", &DENOISE),
     ("upscale", "Upscale model", &UPSCALE),
     ("depth", "Depth model", &DEPTH),
+    ("colorize", "Colorize model", &COLORIZE),
+    ("restore", "Face restoration model", &RESTORE),
 ];
 
 fn pack(key: &str) -> Option<(&'static str, &'static [Asset])> {
@@ -384,13 +413,17 @@ impl Ai {
         if feature == "people" {
             e.det = None;
             e.rec = None;
-            for a in &PEOPLE {
+            let restore = self.pack_on("restore");
+            for a in PEOPLE.iter().filter(|a| !(restore && a.file == "yunet.onnx")) {
                 let _ = std::fs::remove_file(self.dir.join(a.file));
             }
             c.execute_batch("DELETE FROM faces; DELETE FROM people; UPDATE ai_done SET faces=0;").map_err(es)?;
         } else if let Some((_, files)) = pack(feature).filter(|_| feature != "search") {
             e.edit.clear();
-            for a in files {
+            e.det = None;
+            // keep files another installed pack still needs (YuNet is shared with People)
+            let shared: Vec<&str> = PACKS.iter().filter(|p| p.0 != feature && self.pack_on(p.0)).flat_map(|p| p.2.iter().map(|a| a.file)).collect();
+            for a in files.iter().filter(|a| !shared.contains(&a.file)) {
                 let _ = std::fs::remove_file(self.dir.join(a.file));
             }
         } else {
@@ -470,6 +503,11 @@ impl Ai {
 
     /// Faces in an image (boxes and landmarks in image pixels), big enough to recognize.
     fn faces_raw(&self, img: &RgbImage) -> Result<Vec<faces::Det>, String> {
+        let min_side = (img.width().max(img.height()) as f32 / 40.0).max(36.0);
+        self.detect(img, min_side)
+    }
+
+    fn detect(&self, img: &RgbImage, min_side: f32) -> Result<Vec<faces::Det>, String> {
         let mut e = self.engines.lock().unwrap();
         if e.det.is_none() {
             e.det = Some(self.session("yunet.onnx")?);
@@ -484,8 +522,6 @@ impl Ai {
         let (b8, b16, b32) = (get("bbox_8")?, get("bbox_16")?, get("bbox_32")?);
         let (k8, k16, k32) = (get("kps_8")?, get("kps_16")?, get("kps_32")?);
         let found = faces::decode([&c8, &c16, &c32], [&o8, &o16, &o32], [&b8, &b16, &b32], [&k8, &k16, &k32], scale, 0.82);
-        // small faces make poor embeddings; leave them out
-        let min_side = (img.width().max(img.height()) as f32 / 40.0).max(36.0);
         Ok(found.into_iter().filter(|d| d.w.min(d.h) >= min_side).take(24).collect())
     }
 

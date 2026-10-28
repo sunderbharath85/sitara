@@ -53,7 +53,7 @@ export function createMock() {
   const ai: AiStatus = {
     supported: true, search: false, people: false, searchMb: 154, peopleMb: 38, runtimeMb: 17, download: null, indexed: 0, pending: 0, faces: 0, working: false,
     packs: (
-      [["search", 155], ["people", 38], ["erase", 208], ["subject", 114], ["sky", 175], ["denoise", 58], ["upscale", 4], ["depth", 99]] as const
+      [["search", 155], ["people", 38], ["erase", 208], ["subject", 114], ["sky", 175], ["denoise", 58], ["upscale", 4], ["depth", 99], ["colorize", 135], ["restore", 340]] as const
     ).map(([key, mb]) => ({ key, on: false, mb })),
   };
   const layers = new Map<string, string>();
@@ -356,7 +356,13 @@ export function createMock() {
         case "subject": return gray((x, y) => 1 - Math.hypot((x - 0.5) / 0.3, (y - 0.55) / 0.42) ** 4);
         case "sky": return gray((_, y) => 1 - y / 0.35);
         case "depth": return gray((_, y) => y);
-        case "denoise": return new Uint8Array(px).buffer;
+        case "denoise":
+        case "restore_faces": return new Uint8Array(px).buffer;
+        case "colorize": {
+          const out = new Uint8Array(px);
+          for (let i = 0; i < w * h; i++) out.set([Math.min(255, px[i * 4] * 1.1), px[i * 4 + 1], px[i * 4 + 2] * 0.85, 255], i * 4);
+          return out.buffer;
+        }
         case "upscale": {
           const out = new Uint8Array(w * h * 64);
           for (let y = 0; y < h * 4; y++) for (let x = 0; x < w * 4; x++) out.set(px.subarray(((y >> 2) * w + (x >> 2)) * 4, ((y >> 2) * w + (x >> 2)) * 4 + 4), (y * w * 4 + x) * 4);

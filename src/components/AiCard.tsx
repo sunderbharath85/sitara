@@ -136,7 +136,9 @@ const EDITING: [string, string][] = [
   ["sky", "Select sky"],
   ["depth", "Background blur (depth)"],
   ["denoise", "Denoise"],
-  ["upscale", "Upscale ×4"],
+  ["upscale", "Upscale"],
+  ["colorize", "Colorize"],
+  ["restore", "Restore faces"],
 ];
 
 /** Editing models are downloaded from the editor's AI tool; here you can see and delete them. */
@@ -150,7 +152,7 @@ function EditingPacks() {
       <span>
         {on.length
           ? "Downloaded for the editor's AI tool:"
-          : "Remove objects, subject and sky selection, background blur, denoise and upscale download from the editor's AI tool, one at a time, only when you use them."}
+          : "Restore old photos, remove objects, subject and sky selection, background blur, denoise and upscale download from the editor's AI tool, one at a time, only when you use them."}
       </span>
       {on.length > 0 && (
         <div className="ai-eg">

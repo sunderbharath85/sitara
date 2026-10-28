@@ -9,7 +9,7 @@ import { toast } from "../Toasts";
 import { Group, Slider } from "./controls";
 import type { Up } from "./panels";
 
-export type AiAction = "describe" | "enhance" | "remove" | "subject" | "sky" | "background" | "blur" | "denoise" | "upscale";
+export type AiAction = "describe" | "enhance" | "restore" | "remove" | "subject" | "sky" | "background" | "blur" | "denoise" | "upscale";
 
 /** Shows the action when its models are present, otherwise a one-click download. */
 function Needs({ keys, children }: { keys: AiPack["key"][]; children: React.ReactNode }) {
@@ -118,6 +118,33 @@ export function AiPanel({
         <p className="ed-hint">Understood offline. Styles are matched to a look when Search by meaning is on; faces, sky and blur use their own models.</p>
       </section>
 
+      <section className="ai-restore">
+        <div className="ai-restore-h">
+          <Icon n="spark" s={18} />
+          <span>
+            <b>Restore an old photo</b>
+            <small>Removes grain, brings faces back, adds natural color to black &amp; white, and enlarges small prints.</small>
+          </span>
+        </div>
+        <Needs keys={["colorize", "restore"]}>
+          {base?.kind === "restore" ? (
+            <div className="ai-row">
+              <button className="btn" onClick={() => up((x) => void (x.ai.base = null))}>
+                Undo restore
+              </button>
+              <button className="btn-acc" disabled={busy} onClick={() => run("restore")}>
+                Restore again
+              </button>
+            </div>
+          ) : (
+            <button className="btn-acc wide" disabled={busy} onClick={() => run("restore")}>
+              <Icon n="wand" s={15} /> Restore
+            </button>
+          )}
+        </Needs>
+        <small className="ai-fine">Also uses Denoise and Upscale when downloaded. The face model (GFPGAN) is free for personal use; parts of it carry non-commercial terms.</small>
+      </section>
+
       <button className="auto-btn" disabled={busy} onClick={() => run("enhance")}>
         <Icon n="wand" s={16} />
         <span>
@@ -214,7 +241,7 @@ export function AiPanel({
               </button>
             </>
           ) : (
-            <button className="btn" disabled={busy || base?.kind === "upscale"} onClick={() => run("denoise")}>
+            <button className="btn" disabled={busy || !!base} onClick={() => run("denoise")}>
               <Icon n="spark" s={15} /> Denoise
             </button>
           )}
@@ -228,11 +255,11 @@ export function AiPanel({
               Back to the original size
             </button>
           ) : (
-            <button className="btn" disabled={busy || base?.kind === "denoise"} onClick={() => run("upscale")}>
-              <Icon n="expand" s={15} /> Upscale ×4
+            <button className="btn" disabled={busy || !!base} onClick={() => run("upscale")}>
+              <Icon n="expand" s={15} /> Upscale
             </button>
           )}
-          <p className="ed-hint">For small or old photos, up to 1600 px on the long side.</p>
+          <p className="ed-hint">×4 for photos up to 1600 px, ×2 up to 3200 px. The result opens at 100% with before and after; Export saves the full size.</p>
         </Needs>
       </Group>
     </>

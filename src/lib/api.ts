@@ -98,7 +98,7 @@ export interface Suggestion {
 export const EMPTY_STATUS: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0, analyzing: false, analysisPending: 0, learning: false, learnPending: 0 };
 
 export interface AiPack {
-  key: "search" | "people" | "erase" | "subject" | "sky" | "denoise" | "upscale" | "depth";
+  key: "search" | "people" | "erase" | "subject" | "sky" | "denoise" | "upscale" | "depth" | "colorize" | "restore";
   on: boolean;
   mb: number;
 }

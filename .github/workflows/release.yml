@@ -13,7 +13,26 @@ permissions:
   attestations: write
 
 jobs:
+  # one draft release up front, so the parallel builds can't each create their own
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.release.outputs.id }}
+    steps:
+      - id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -1)
+          if [ -z "$id" ]; then
+            id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" -f tag_name="$TAG" -f name="Sitara $TAG" \
+              -f body="See the assets below to download Sitara for your platform." -F draft=true -F prerelease=false --jq .id)
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: create-release
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
@@ -62,11 +81,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Sitara ${{ github.ref_name }}
-          releaseBody: See the assets below to download Sitara for your platform.
-          releaseDraft: true
-          prerelease: true
+          releaseId: ${{ needs.create-release.outputs.id }}
           args: ${{ matrix.args }}
 
       - name: Attest build provenance

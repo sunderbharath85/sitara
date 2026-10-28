@@ -857,3 +857,12 @@ button.link { color: var(--acc); font-size: inherit; text-decoration: underline;
 .ai-edit-packs b { color: var(--text); font-size: 13.5px; }
 .ai-edit-packs .ai-eg { flex-basis: 100%; }
 .ai-eg .pack { display: inline-flex; align-items: center; gap: 6px; }
+
+.ai-restore { margin: 4px 0 12px; padding: 14px; border-radius: 14px; border: 1px solid rgba(155, 92, 255, 0.4); background: linear-gradient(140deg, rgba(155, 92, 255, 0.16), rgba(255, 107, 61, 0.08)); }
+.ai-restore-h { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 10px; }
+.ai-restore-h svg { color: #c4a6ff; margin-top: 2px; }
+.ai-restore-h span { display: flex; flex-direction: column; gap: 2px; }
+.ai-restore-h b { font-size: 14px; }
+.ai-restore-h small { font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+.ai-restore .btn-acc.wide { width: 100%; justify-content: center; }
+.ai-fine { display: block; margin-top: 8px; font-size: 10.5px; color: var(--dim); line-height: 1.45; }
