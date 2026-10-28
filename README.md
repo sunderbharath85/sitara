@@ -79,6 +79,16 @@ Sitara reads the folders you choose, builds one timeline of every photo and clip
 | 4. On-device AI ✅ | Search by meaning (CLIP), faces and people. Models download on demand and run offline |
 | 5. AI editing | To be designed |
 
+## Install
+
+Download the installer for your platform from [Releases](https://github.com/sunderbharath85/sitara/releases).
+
+- **Windows:** until code signing is active, SmartScreen may warn about an unknown publisher. Choose **More info → Run anyway**.
+- **macOS:** builds aren't notarized, so open the app once, then use **System Settings → Privacy & Security → Open Anyway**.
+- **Every platform:** check that a file came from this repository's build with `gh attestation verify <file> --repo sunderbharath85/sitara`.
+
+See the [code signing policy](docs/CODE_SIGNING.md).
+
 ## Develop
 
 Requirements: Rust (stable), Node 22+, and the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS.
