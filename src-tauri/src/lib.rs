@@ -6,6 +6,7 @@ mod db;
 mod export;
 mod geo;
 mod meta;
+mod private;
 mod protocol;
 mod raw;
 mod scan;
@@ -33,6 +34,17 @@ pub struct AppState {
     pub render_slots: Arc<Semaphore>,
     /// Optional on-device AI (search by meaning, people).
     pub ai: Arc<ai::Ai>,
+    /// Private folders: the vault, whether it's unlocked, and the idle lock.
+    pub private: Arc<private::Private>,
+}
+
+fn lock_private(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    if let Some(s) = app.try_state::<AppState>()
+        && s.private.lock()
+    {
+        let _ = app.emit("private-changed", ());
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -52,6 +64,14 @@ pub fn run() {
                 responder.respond(protocol::serve(app, req, thumbs::Mode::Preview).await);
             });
         })
+        .on_window_event(|w, ev| {
+            if let tauri::WindowEvent::Resized(_) = ev
+                && w.is_minimized().unwrap_or(false)
+                && w.app_handle().try_state::<AppState>().is_some_and(|s| s.private.lock_on_minimize())
+            {
+                lock_private(w.app_handle());
+            }
+        })
         .setup(|app| {
             let h = app.handle();
             let data = h.path().app_data_dir()?;
@@ -63,6 +83,7 @@ pub fn run() {
             let conn = db::open(&db_path)?;
             db::migrate(&conn)?;
             let roots = db::folder_roots(&conn)?;
+            let private = Arc::new(private::Private::load(&conn));
             let indexer = scan::start(h.clone(), db_path.clone(), cache.clone());
             let slots = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).max(2);
             app.manage(AppState {
@@ -73,7 +94,24 @@ pub fn run() {
                 watchers: Mutex::new(HashMap::new()),
                 render_slots: Arc::new(Semaphore::new(slots)),
                 ai: Arc::new(ai::Ai::new(models)),
+                private: private.clone(),
             });
+            // the idle lock
+            {
+                let h = h.clone();
+                std::thread::Builder::new().name("private-idle".into()).spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    if private.lock_if_idle() {
+                        use tauri::Emitter;
+                        let _ = h.emit("private-changed", ());
+                    }
+                })?;
+            }
+            #[cfg(windows)]
+            if let Some(w) = h.get_webview_window("main") {
+                let h = h.clone();
+                private::on_session_lock(&w, move || lock_private(&h));
+            }
             let state = app.state::<AppState>();
             for (id, path) in roots {
                 commands::start_watch(h, &state, id, Path::new(&path));
@@ -137,6 +175,19 @@ pub fn run() {
             commands::ai_op,
             commands::ai_layer_put,
             commands::ai_release,
+            commands::private_status,
+            commands::private_setup,
+            commands::private_unlock,
+            commands::private_recover,
+            commands::private_change_password,
+            commands::private_new_recovery_key,
+            commands::private_save_key,
+            commands::private_lock,
+            commands::private_touch,
+            commands::private_settings,
+            commands::private_add,
+            commands::private_remove,
+            commands::private_reset,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sitara");

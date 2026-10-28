@@ -45,7 +45,18 @@ ureq = "3"
 sha2 = "0.10"
 tar = "0.4"
 regex = "1"
+# Private: Argon2id unlocks an X25519 key; Sitara's renders of private items are sealed to it
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+crypto_box = { version = "0.9", features = ["seal"] }
+zeroize = "1"
 
+
+# Unlocking Private is Argon2 at 64 MiB: unoptimized, it takes seconds in dev builds and tests
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
@@ -56,7 +67,9 @@ panic = "abort"
 strip = true
 
 [target."cfg(windows)".dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_LibraryLoader"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_LibraryLoader", "Win32_System_RemoteDesktop", "Win32_UI_WindowsAndMessaging"] }
+# Private: clear the webview's disk cache when items become private (same version Tauri uses)
+webview2-com = "0.39"
 # AI on the graphics card: DirectML on Windows, Core ML on macOS (the runtimes themselves download on demand)
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["directml"] }
 

@@ -2,9 +2,11 @@ import { useEffect, useState } from "react";
 import { api, type Suggestion } from "../lib/api";
 import { addFolder, reloadFolders } from "../lib/actions";
 import { ago, fmtNum, fmtSize, plural } from "../lib/format";
+import { makePrivate } from "../lib/private";
 import { store, useStore } from "../lib/store";
 import { AiCard } from "./AiCard";
 import { Icon } from "./Icon";
+import { PrivateCard } from "./Private";
 import { toast } from "./Toasts";
 
 function useSuggestions() {
@@ -71,6 +73,7 @@ export function FoldersView() {
       </div>
 
       <AiCard />
+      <PrivateCard />
 
       <div className="flist">
         {folders?.map((f) => (
@@ -89,22 +92,28 @@ export function FoldersView() {
               </span>
             </div>
             <div className="fscan">scanned {ago(f.lastScan)}</div>
-            {confirm === f.id ? (
-              <button
-                className="btn danger"
-                onClick={async () => {
-                  setConfirm(null);
-                  store.set({ folders: await api.removeFolder(f.id) });
-                  toast(`Removed ${f.path} from Sitara · files on disk are untouched`);
-                }}
-              >
-                Remove from library
+            <div className="fact">
+              <button className="btn" onClick={() => makePrivate(f.path)} title="Hide this folder in the Private space">
+                <Icon n="lock" s={15} />
+                Make private
               </button>
-            ) : (
-              <button className="btn" onClick={() => setConfirm(f.id)} title="Stop showing this folder (files stay on disk)">
-                <Icon n="x" s={15} />
-              </button>
-            )}
+              {confirm === f.id ? (
+                <button
+                  className="btn danger"
+                  onClick={async () => {
+                    setConfirm(null);
+                    store.set({ folders: await api.removeFolder(f.id) });
+                    toast(`Removed ${f.path} from Sitara · files on disk are untouched`);
+                  }}
+                >
+                  Remove from library
+                </button>
+              ) : (
+                <button className="btn" onClick={() => setConfirm(f.id)} title="Stop showing this folder (files stay on disk)">
+                  <Icon n="x" s={15} />
+                </button>
+              )}
+            </div>
           </div>
         ))}
       </div>

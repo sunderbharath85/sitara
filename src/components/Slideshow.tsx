@@ -5,7 +5,7 @@ import { detailCached, mediaSrc, thumbUrl, type Lib, type MediaDetail } from "..
 import { basename, camera, dayPart, fmtDur, fmtMonth, fmtShortDay, hourOf, weekday } from "../lib/format";
 import { aspect } from "../lib/layout";
 import { beatPulse, M, musicStart, musicStop, PHR } from "../lib/soundtrack";
-import { store, useStore, type ShowRequest } from "../lib/store";
+import { libOf, store, useStore, type ShowRequest } from "../lib/store";
 import { activeGrid } from "./Grid";
 import { iconHtml } from "./Icon";
 import { toast } from "./Toasts";
@@ -673,7 +673,7 @@ const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 
 export function Slideshow() {
   const req = useStore((s) => s.show);
-  const lib = useStore((s) => s.lib);
+  const lib = useStore(libOf);
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!req || !lib || !root.current) return;

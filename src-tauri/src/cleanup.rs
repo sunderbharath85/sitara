@@ -131,7 +131,7 @@ pub fn scan(conn: &Connection) -> rusqlite::Result<Report> {
         "SELECT m.id, m.name, m.dir, m.size, m.width, m.height, m.taken, m.favorite, m.path, m.kind, m.chash,
                 a.dhash, a.sharp, a.luma, a.contrast, a.clip
          FROM media m LEFT JOIN analysis a ON a.media_id = m.id
-         WHERE m.trashed = 0 ORDER BY m.taken ASC, m.id ASC",
+         WHERE m.trashed = 0 AND m.private = 0 ORDER BY m.taken ASC, m.id ASC",
     )?;
     let mut rows: Vec<Row> = st
         .query_map([], |r| {

@@ -31,14 +31,38 @@ pub fn edited_file(cache: &Path, id: i64, mode: Mode) -> PathBuf {
     cache.join(sub).join(format!("{:03}", id % 1000)).join(format!("{id}.jpg"))
 }
 
+/// A private item's render, sealed to the Private key, next to where the plain one would be.
+pub fn sealed(path: &Path) -> PathBuf {
+    path.with_extension("sealed")
+}
+
+fn remove_both(path: PathBuf) {
+    let _ = std::fs::remove_file(sealed(&path));
+    let _ = std::fs::remove_file(path);
+}
+
 pub fn forget(cache: &Path, id: i64) {
-    let _ = std::fs::remove_file(cache_file(cache, id, Mode::Thumb));
-    let _ = std::fs::remove_file(cache_file(cache, id, Mode::Preview));
+    remove_both(cache_file(cache, id, Mode::Thumb));
+    remove_both(cache_file(cache, id, Mode::Preview));
 }
 
 pub fn forget_edited(cache: &Path, id: i64) {
-    let _ = std::fs::remove_file(edited_file(cache, id, Mode::Thumb));
-    let _ = std::fs::remove_file(edited_file(cache, id, Mode::Preview));
+    remove_both(edited_file(cache, id, Mode::Thumb));
+    remove_both(edited_file(cache, id, Mode::Preview));
+}
+
+pub fn face_file(cache: &Path, face_id: i64) -> PathBuf {
+    cache.join("f").join(format!("{:03}", face_id % 1000)).join(format!("{face_id}.jpg"))
+}
+
+/// Every cached render of an item: thumbnail and preview, of the original and of its edits.
+pub fn renders(cache: &Path, id: i64) -> [PathBuf; 4] {
+    [
+        cache_file(cache, id, Mode::Thumb),
+        cache_file(cache, id, Mode::Preview),
+        edited_file(cache, id, Mode::Thumb),
+        edited_file(cache, id, Mode::Preview),
+    ]
 }
 
 pub fn rust_decodable(ext: &str) -> bool {
@@ -110,7 +134,7 @@ pub fn render(src: &Path, ext: &str, is_video: bool, mode: Mode) -> Result<Vec<u
 
 /// A square portrait around a face (box normalized to the upright photo), cached by face id.
 pub fn face(cache: &Path, face_id: i64, src: &Path, ext: &str, b: [f32; 4]) -> Result<Vec<u8>, String> {
-    let out = cache.join("f").join(format!("{:03}", face_id % 1000)).join(format!("{face_id}.jpg"));
+    let out = face_file(cache, face_id);
     if let Ok(bytes) = std::fs::read(&out) {
         return Ok(bytes);
     }

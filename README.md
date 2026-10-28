@@ -55,6 +55,10 @@ Sitara reads the folders you choose, builds one timeline of every photo and clip
   - **Smart enhance:** automatic tone, plus brighter faces and a richer sky when those models are present.
   - Like every edit, these are non-destructive: AI results are kept as separate layers, so you can undo or revert them.
 - **Albums:** every folder becomes an album automatically; make your own from any selection.
+- **Private folders:** mark any folder private and its photos disappear from Sitara (the timeline, albums, search, People, Cleanup) until you unlock Private with a password or PIN. Unlocked, they show in their own Private space, never mixed into the main timeline.
+  - **Locks itself** after 1, 5, 15 or 30 minutes idle, when Windows locks or sleeps, optionally when minimized, and on `Ctrl L`.
+  - **Recovery key** shown once at setup, in case you forget the password. If you lose both, Reset Private removes the private folders from Sitara; your files are never deleted.
+  - Sitara's thumbnails and previews of private photos are encrypted on disk. The originals stay where they are and File Explorer can still open them, so this keeps them private inside Sitara; it isn't disk encryption.
 - **Select and act:** click, Ctrl/Shift-click or lasso to select, then favorite, add to an album, play as a slideshow, or move to the Recycle Bin with **Undo**.
 - **Search** (Ctrl K): file and folder names, cameras, years, months, "videos", "favorites".
 - **On-device AI** (optional, turned on in Folders):
@@ -71,6 +75,7 @@ Sitara reads the folders you choose, builds one timeline of every photo and clip
 | `Ctrl K` or `/` | Search and commands |
 | `1` `2` `3` `4` | Library, Albums, Cleanup, Folders |
 | `P` | Slideshow (of the selection, the album, or everything) |
+| `Ctrl L` | Lock Private |
 | `Ctrl A`, `Esc` | Select all, clear |
 | `F`, `A`, `Del` | Favorite, add to album, Recycle Bin |
 | Viewer: `←` `→` `I` `0` `Esc` | Navigate, info panels, reset zoom, close |

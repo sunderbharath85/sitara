@@ -148,6 +148,51 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
   - Blur and noise words trigger those tools.
   - Style words ("like an old film") are matched by rendering every look at 224 px and scoring each against the text with CLIP. A look is applied only if it beats the unchanged photo by a clear margin.
 
+## Private folders
+
+Private works like a locked folder on a phone. Folders marked private show nowhere in Sitara until the user unlocks Private with a password. Even then they show only in the Private space, never in the main timeline.
+
+- **What is private:**
+  - `private_dirs` holds the private folders: library folders, or any folder inside one.
+  - The indexer sets `media.private` on every item at or under one, and `db::refresh_private` re-derives the flags whenever the list changes.
+  - The flag follows the path, so a file moved out of a private folder becomes public.
+- **Hidden everywhere while locked:**
+  - Every list query filters on the flag: the timeline, albums, folder albums, folder counts, text search and the command palette.
+  - Commands on a single item (details, favorite, trash, edit, export, reveal) refuse private items while locked.
+  - Private albums (`albums.private`) hold only private items, and public albums only public ones.
+  - On-device AI and image analysis never learn from private items. The warmer deletes their CLIP vectors, faces and analysis rows, and skips them when learning. Search by meaning, People, smart albums and Cleanup know nothing about them.
+- **The vault** (`private.rs`, table `private_vault`) is an X25519 key pair.
+  - The secret half is stored twice, each copy wrapped with XChaCha20-Poly1305:
+    - under a key derived from the password with Argon2id (64 MiB, 3 passes, about half a second);
+    - under a key derived from the recovery key with BLAKE3. The recovery key is 120 random bits, shown once as six groups of four Crockford base32 characters.
+  - Nothing that could check a password is stored. Unlocking works when unwrapping does.
+  - The first five wrong tries in a row cost nothing. After that, each try waits 30 s, then 1 min, then 5 min, then 15 min. The count is stored, so restarting doesn't reset it.
+  - Changing the password re-wraps the secret; nothing else is re-encrypted.
+- **Sealed renders:**
+  - Thumbnails, previews, edit renders and AI layers of private items are sealed to the public key with libsodium sealed boxes.
+  - Each is stored as a `.sealed` file next to where its `.jpg` or `.png` would be.
+  - The warmer can make them while Private is locked; only an unlocked session can read them.
+  - Marking a folder private seals its existing renders and deletes the plain ones. Making it public again turns them back into plain files.
+- **Serving:**
+  - `thumb://` and `preview://` serve private items only while Private is unlocked, with `Cache-Control: no-store`.
+  - Their URLs carry `p=1`, so they never match a response the webview cached while the item was public. Marking a folder private also clears the webview's disk cache.
+  - Originals of private items stream through `preview://localhost/{id}?orig=1` instead of the asset protocol. It supports byte ranges and sends at most 8 MiB per response.
+- **Locking:** the secret is held in memory only while Private is unlocked. It is dropped:
+  - when the idle timer runs out (1, 5, 15 or 30 minutes). A Rust thread checks every 2 s. The UI reports activity at most every 20 s, including while a video or slideshow plays;
+  - when Windows locks the session or the machine goes to sleep (`WM_WTSSESSION_CHANGE` and `WM_POWERBROADCAST` on the main window);
+  - when the window is minimized, if the user turned that on;
+  - on Ctrl+L, the lock button, or quitting.
+
+  `private-changed` tells the UI, which drops the private library and closes anything showing a private item.
+- **Recovery:**
+  - The recovery key unlocks Private and sets a new password.
+  - Without the password and the key, Reset Private removes the private folders from Sitara. Library folders that were private are removed. Private folders inside public ones go into `excluded_dirs`, which scans skip.
+  - Reset never shows private items in the library. The files stay on disk, so nothing is lost, and adding a folder again brings it back.
+- **Limits:**
+  - Originals stay where they are and can still be opened in File Explorer or any other app. Private hides them inside Sitara and encrypts Sitara's own copies; it is not disk encryption.
+  - Folder paths are stored in the library database without encryption.
+  - Windows' own thumbnail cache may hold thumbnails of private videos and HEIC files, made by Explorer or the shell thumbnailer.
+
 ## Conventions
 
 - **Capture time** (`taken`) is the wall-clock time the photo was taken, stored as seconds as if it were UTC. Every UI formatter uses `timeZone: "UTC"`, so a photo taken at 9:00 in Kyoto reads 9:00 everywhere. Order of preference: EXIF `DateTimeOriginal`, then MP4 `mvhd` creation time converted to local time, then file mtime.
@@ -165,6 +210,7 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
 | Face portraits | `%LOCALAPPDATA%\app.sitara.photos\thumbs\f\` |
 | AI models and runtime (optional) | `%LOCALAPPDATA%\app.sitara.photos\models\` |
 | AI edit layers (removals, masks, denoise/upscale/restore) | `%LOCALAPPDATA%\app.sitara.photos\layers\` |
+| Renders and layers of private items | the same folders, as `.sealed` files |
 
 ## Developing without Tauri
 

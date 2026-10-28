@@ -70,7 +70,7 @@ pub fn compute(conn: &Connection) -> rusqlite::Result<Vec<SmartAlbum>> {
     let mut st = conn.prepare(
         "SELECT m.id, m.taken, m.kind, m.favorite, m.width, m.height, m.lat, m.lon, m.name, m.dir, m.lens, a.luma
          FROM media m LEFT JOIN analysis a ON a.media_id = m.id AND a.sharp >= 0
-         WHERE m.trashed = 0 ORDER BY m.taken ASC, m.id ASC",
+         WHERE m.trashed = 0 AND m.private = 0 ORDER BY m.taken ASC, m.id ASC",
     )?;
     let items: Vec<It> = st
         .query_map([], |r| {

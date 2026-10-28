@@ -45,6 +45,8 @@ export interface MediaDetail {
   folder: string;
   /** Edit revision; 0 when unedited. */
   edited: number;
+  /** Lives in a Private folder. */
+  private: boolean;
 }
 
 export interface FolderInfo {
@@ -94,6 +96,31 @@ export interface Suggestion {
   path: string;
   label: string;
 }
+
+/** A folder marked Private (a library root or any subfolder of one). */
+export interface PrivateDir {
+  path: string;
+  name: string;
+  count: number;
+  photos: number;
+  videos: number;
+  bytes: number;
+  root: boolean;
+}
+export interface PrivateStatus {
+  setUp: boolean;
+  unlocked: boolean;
+  /** Idle auto-lock, in seconds: 60 | 300 | 900 | 1800. */
+  idleSecs: number;
+  lockOnMinimize: boolean;
+  /** Unix ms when the idle auto-lock fires; null while locked. */
+  lockAt: number | null;
+  /** Unix ms: unlock attempts are refused until then (after repeated wrong passwords). */
+  waitUntil: number | null;
+  /** Empty while locked. */
+  dirs: PrivateDir[];
+}
+export const EMPTY_PRIVATE: PrivateStatus = { setUp: false, unlocked: false, idleSecs: 300, lockOnMinimize: false, lockAt: null, waitUntil: null, dirs: [] };
 
 export const EMPTY_STATUS: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0, analyzing: false, analysisPending: 0, learning: false, learnPending: 0 };
 
@@ -238,7 +265,7 @@ const WEB_SAFE = new Set(["jpg", "jpeg", "jpe", "jfif", "png", "gif", "webp", "a
 const MAC = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
 
 export const api = {
-  library: async () => decodeLibrary(await call<ArrayBuffer>("library")),
+  library: async (inPrivate = false) => decodeLibrary(await call<ArrayBuffer>("library", inPrivate ? { private: true } : undefined)),
   detail: (id: number) => call<MediaDetail | null>("media_detail", { id }),
   folders: () => call<FolderInfo[]>("folders"),
   addFolder: (path: string) => call<FolderInfo[]>("add_folder", { path }),
@@ -249,15 +276,15 @@ export const api = {
   setFavorite: (ids: number[], value: boolean) => call<void>("set_favorite", { ids, value }),
   trash: (ids: number[]) => call<number[]>("trash_items", { ids }),
   restore: (ids: number[]) => call<number[]>("restore_items", { ids }),
-  albums: () => call<Albums>("albums"),
+  albums: (inPrivate = false) => call<Albums>("albums", inPrivate ? { private: true } : undefined),
   albumItems: (id: number) => call<number[]>("album_items", { id }),
   dirItems: (dir: string) => call<number[]>("dir_items", { dir }),
-  albumCreate: (name: string, ids: number[]) => call<number>("album_create", { name, ids }),
+  albumCreate: (name: string, ids: number[], inPrivate = false) => call<number>("album_create", inPrivate ? { name, ids, private: true } : { name, ids }),
   albumAdd: (id: number, ids: number[]) => call<void>("album_add", { id, ids }),
   albumRemove: (id: number, ids: number[]) => call<void>("album_remove", { id, ids }),
   albumRename: (id: number, name: string) => call<void>("album_rename", { id, name }),
   albumDelete: (id: number) => call<void>("album_delete", { id }),
-  search: (q: string) => call<number[]>("search", { q }),
+  search: (q: string, inPrivate = false) => call<number[]>("search", inPrivate ? { q, private: true } : { q }),
   reveal: (id: number) => call<void>("reveal", { id }),
   openExternal: (id: number) => call<void>("open_external", { id }),
   smartAlbums: () => call<SmartAlbum[]>("smart_albums"),
@@ -289,10 +316,10 @@ export const api = {
     const body = await rawBody(head, parts.map((p) => new Blob([p as BlobPart])));
     return invoke<ArrayBuffer>("ai_op", body);
   },
-  /** Keep an AI edit's pixels (PNG); returns its hash. */
+  /** Keep an AI edit's pixels (PNG); returns its hash. Edits of a private photo say so, so the layer is kept encrypted. */
   async layerPut(png: Blob): Promise<string> {
     if (mock) return mock.layerPut(png);
-    return invoke<string>("ai_layer_put", new Uint8Array(await png.arrayBuffer()));
+    return invoke<string>("ai_layer_put", new Uint8Array(await png.arrayBuffer()), layerPrivate ? { headers: { "x-sitara-private": "1" } } : undefined);
   },
   aiRelease: () => (mock ? Promise.resolve() : call<void>("ai_release")),
   editLoad: (id: number) => call<string | null>("edit_load", { id }),
@@ -320,10 +347,31 @@ export const api = {
     await revealItemInDir(path);
   },
 
-  async pickFolder(): Promise<string | null> {
+  privateStatus: () => call<PrivateStatus>("private_status"),
+  privateSetup: (password: string, idleSecs: number) => call<string>("private_setup", { password, idleSecs }),
+  privateUnlock: (password: string) => call<PrivateStatus>("private_unlock", { password }),
+  privateRecover: (recoveryKey: string, password: string) => call<PrivateStatus>("private_recover", { recoveryKey, password }),
+  privateChangePassword: (current: string, password: string) => call<void>("private_change_password", { current, password }),
+  privateNewRecoveryKey: (password: string) => call<string>("private_new_recovery_key", { password }),
+  privateLock: () => call<void>("private_lock"),
+  privateTouch: () => call<number | null>("private_touch"),
+  privateSettings: (idleSecs: number, lockOnMinimize: boolean) => call<PrivateStatus>("private_settings", { idleSecs, lockOnMinimize }),
+  privateReset: () => call<PrivateStatus>("private_reset", { confirm: "RESET" }),
+  privateAdd: (path: string) => call<PrivateStatus>("private_add", { path }),
+  privateRemove: (path: string) => call<PrivateStatus>("private_remove", { path }),
+  /** Let the user keep the recovery key in a text file. Resolves false if they cancelled. */
+  async saveRecoveryKey(key: string): Promise<boolean> {
+    if (mock) return mock.saveKey(key);
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const path = await save({ defaultPath: "Sitara recovery key.txt", title: "Save your recovery key", filters: [{ name: "Text file", extensions: ["txt"] }] });
+    if (!path) return false;
+    await call<void>("private_save_key", { path, key });
+    return true;
+  },
+  async pickFolder(title = "Add a folder to Sitara"): Promise<string | null> {
     if (mock) return mock.pickFolder();
     const { open } = await import("@tauri-apps/plugin-dialog");
-    const r = await open({ directory: true, multiple: false, title: "Add a folder to Sitara" });
+    const r = await open({ directory: true, multiple: false, title });
     return typeof r === "string" ? r : null;
   },
   async openUrl(url: string) {
@@ -339,6 +387,11 @@ export const api = {
   onLibraryChanged(cb: () => void) {
     if (mock) return mock.on("library-changed", cb);
     const un = listen("library-changed", () => cb());
+    return () => void un.then((f) => f());
+  },
+  onPrivateChanged(cb: () => void) {
+    if (mock) return mock.on("private-changed", cb);
+    const un = listen("private-changed", () => cb());
     return () => void un.then((f) => f());
   },
   onAnalysisChanged(cb: () => void) {
@@ -364,22 +417,40 @@ export const api = {
   },
 };
 
-export const thumbUrl = (id: number, ver: number) =>
-  mock ? mock.thumbUrl(id) : `${convertFileSrc(String(id), "thumb")}?v=${ver}`;
+/**
+ * Ids of the items in the Private space (filled from the private library while it is unlocked). Their URLs carry
+ * `p=1`, so they never match a cached public response and the backend serves them uncached and decrypted.
+ */
+let privateIds = new Set<number>();
+export const setPrivateIds = (lib: Lib | null) => void (privateIds = new Set(lib ? lib.id : []));
+export const isPrivate = (id: number) => privateIds.has(id);
+const pv = (url: string, id: number) => (privateIds.has(id) ? `${url}${url.includes("?") ? "&" : "?"}p=1` : url);
+
+/** True while the editor works on a private photo, so AI layers are stored encrypted. */
+let layerPrivate = false;
+export const setLayerPrivate = (on: boolean) => void (layerPrivate = on);
+
+export const thumbUrl = (id: number, ver: number) => (mock ? mock.thumbUrl(id) : pv(`${convertFileSrc(String(id), "thumb")}?v=${ver}`, id));
 
 /** Pixels an AI edit made, by hash. */
 export const layerUrl = (hash: string) => (mock ? mock.layerUrl(hash) : `${convertFileSrc("layer", "thumb")}/${hash}`);
 
-/** Square portrait of a detected face. */
+/** Square portrait of a detected face. Never asked for private photos. */
 export const faceUrl = (faceId: number) => (mock ? mock.faceUrl(faceId) : `${convertFileSrc("face", "thumb")}/${faceId}`);
 
-/** Full-resolution source for the viewer and slideshow. Edited photos show the editor's render. */
+/**
+ * Full-resolution source for the viewer and slideshow. Edited photos show the editor's render. Private originals
+ * are not reachable through the asset protocol, so they come through the preview scheme (`orig=1` supports Range).
+ */
 export function mediaSrc(d: MediaDetail): string {
   if (mock) return mock.fullUrl(d.id);
-  if (d.kind === 0 && d.edited) return `${convertFileSrc(String(d.id), "preview")}?v=${Math.floor(d.mtime / 1000)}&e=${d.edited}`;
+  const p = d.private || privateIds.has(d.id) ? "&p=1" : "";
+  const pre = convertFileSrc(String(d.id), "preview");
+  const v = Math.floor(d.mtime / 1000);
+  if (d.kind === 0 && d.edited) return `${pre}?v=${v}&e=${d.edited}${p}`;
   if (d.kind === 1 || WEB_SAFE.has(d.ext) || (MAC && (d.ext === "heic" || d.ext === "heif" || d.ext === "tif" || d.ext === "tiff")))
-    return convertFileSrc(d.path);
-  return `${convertFileSrc(String(d.id), "preview")}?v=${Math.floor(d.mtime / 1000)}`;
+    return p ? `${pre}?orig=1&p=1` : convertFileSrc(d.path);
+  return `${pre}?v=${v}${p}`;
 }
 
 /**
@@ -388,7 +459,9 @@ export function mediaSrc(d: MediaDetail): string {
  */
 export function editSource(d: MediaDetail): { url: string; binary: boolean; fallback?: string } {
   if (mock) return { url: mock.originalUrl(d.id), binary: false };
-  const full = `${convertFileSrc(String(d.id), "preview")}?full=1&v=${Math.floor(d.mtime / 1000)}`;
+  const p = d.private || privateIds.has(d.id) ? "&p=1" : "";
+  const full = `${convertFileSrc(String(d.id), "preview")}?full=1&v=${Math.floor(d.mtime / 1000)}${p}`;
+  if (p) return { url: full, binary: true };
   if (WEB_SAFE.has(d.ext) && d.ext !== "svg") return { url: convertFileSrc(d.path), binary: false, fallback: full };
   return { url: full, binary: true };
 }

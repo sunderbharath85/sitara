@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, faceUrl, thumbUrl, type Albums as AlbumsData, type Lib, type Person, type SmartAlbum } from "../lib/api";
 import { startShow } from "../lib/actions";
 import { fmtNum, plural } from "../lib/format";
+import { makePrivate } from "../lib/private";
 import { setSel, store, useStore, type AlbumPage as Page } from "../lib/store";
 import { Prompt } from "./Chrome";
 import { Grid } from "./Grid";
@@ -34,10 +35,11 @@ function Stack({ lib, covers }: { lib: Lib; covers: number[] }) {
   );
 }
 
-export function AlbumsView({ active }: { active: boolean }) {
-  const lib = useStore((s) => s.lib);
-  const libVer = useStore((s) => s.libVer);
-  const page = useStore((s) => s.album);
+/** `priv`: the Private space's albums (its own manual albums and folders), under `head` instead of the usual title. */
+export function AlbumsView({ active, priv, head }: { active: boolean; priv?: boolean; head?: ReactNode }) {
+  const lib = useStore((s) => (priv ? s.plib : s.lib));
+  const libVer = useStore((s) => (priv ? s.plibVer : s.libVer));
+  const page = useStore((s) => (s.album && (s.view === "private") === !!priv ? s.album : null));
   const [data, setData] = useState<AlbumsData | null>(null);
   const [smart, setSmart] = useState<SmartAlbum[]>([]);
   const [people, setPeople] = useState<Person[]>([]);
@@ -45,7 +47,8 @@ export function AlbumsView({ active }: { active: boolean }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [naming, setNaming] = useState(false);
   const load = () => {
-    api.albums().then(setData).catch((e) => toast(String(e)));
+    api.albums(priv).then(setData).catch((e) => toast(String(e)));
+    if (priv) return;
     api.smartAlbums().then(setSmart).catch(() => {});
     if (store.get().ai?.people) api.people().then(setPeople).catch(() => {});
     else setPeople([]);
@@ -53,14 +56,14 @@ export function AlbumsView({ active }: { active: boolean }) {
   useEffect(() => {
     if (active && !page) load();
   }, [active, page, libVer]);
-  useEffect(() => api.onAnalysisChanged(() => active && !store.get().album && api.smartAlbums().then(setSmart).catch(() => {})), [active]);
-  useEffect(() => api.onAiChanged(() => active && api.people().then(setPeople).catch(() => {})), [active]);
+  useEffect(() => (priv ? undefined : api.onAnalysisChanged(() => active && !store.get().album && api.smartAlbums().then(setSmart).catch(() => {}))), [active, priv]);
+  useEffect(() => (priv ? undefined : api.onAiChanged(() => active && api.people().then(setPeople).catch(() => {}))), [active, priv]);
   useEffect(() => {
-    if (active && peopleOn) api.people().then(setPeople).catch(() => {});
+    if (active && peopleOn && !priv) api.people().then(setPeople).catch(() => {});
   }, [active, peopleOn]);
 
   if (!lib) return null;
-  if (page) return <AlbumPage lib={lib} page={page} active={active} onChanged={load} />;
+  if (page) return <AlbumPage lib={lib} page={page} active={active} onChanged={load} priv={priv} />;
 
   type Card = { key: string; title: string; sub: string; count: number; covers: number[]; badge: string; auto: boolean; open: () => void; ids: () => Promise<number[]> };
   const smartCard = (a: SmartAlbum): Card => ({
@@ -75,7 +78,7 @@ export function AlbumsView({ active }: { active: boolean }) {
     ...(show("albums")
       ? (data?.manual ?? []).map((a) => ({
           key: `a${a.id}`, title: a.name, sub: "Album", count: a.count, covers: a.covers, badge: "Album", auto: false,
-          open: () => openAlbum(a.id, a.name), ids: () => api.albumItems(a.id),
+          open: () => openAlbum(a.id, a.name, priv), ids: () => api.albumItems(a.id),
         }))
       : []),
     ...(show("smart") ? smart.filter((a) => a.kind === "smart").map(smartCard) : []),
@@ -83,14 +86,16 @@ export function AlbumsView({ active }: { active: boolean }) {
     ...(show("folders")
       ? (data?.folders ?? []).map((f) => ({
           key: `d${f.dir}`, title: f.name, sub: f.parent, count: f.count, covers: f.covers, badge: "Folder", auto: true,
-          open: () => openDir(f.dir, f.name), ids: () => api.dirItems(f.dir),
+          open: () => openDir(f.dir, f.name, priv), ids: () => api.dirItems(f.dir),
         }))
       : []),
   ];
   const nTrips = smart.filter((a) => a.kind === "trip").length;
   const nPlaces = smart.filter((a) => a.kind === "place").length;
+  const filters = priv ? FILTERS.filter(([f]) => f === "all" || f === "albums" || f === "folders") : FILTERS;
   return (
     <div className="scroller page" onScroll={(e) => document.body.classList.toggle("scrolled", e.currentTarget.scrollTop > 10)}>
+      {head ?? (
       <div className="page-head">
         <div className="ghost" aria-hidden="true">
           ALBUMS
@@ -112,14 +117,20 @@ export function AlbumsView({ active }: { active: boolean }) {
           </button>
         </div>
       </div>
+      )}
       <div className="chips">
-        {FILTERS.map(([f, label]) => (
+        {filters.map(([f, label]) => (
           <button key={f} className={`chip${filter === f ? " on" : ""}`} onClick={() => setFilter(f)}>
             {label}
           </button>
         ))}
+        {priv && (
+          <button className="chip" style={{ marginLeft: "auto" }} onClick={() => setNaming(true)}>
+            <Icon n="plus" s={14} /> New album
+          </button>
+        )}
       </div>
-      {filter === "all" && <PeopleStrip people={people} onAll={() => setFilter("people")} />}
+      {filter === "all" && !priv && <PeopleStrip people={people} onAll={() => setFilter("people")} />}
       {isPeople && <PeopleGrid people={people} />}
       {data && !isPeople && cards.length === 0 && (
         <div className="empty">
@@ -127,7 +138,7 @@ export function AlbumsView({ active }: { active: boolean }) {
           <span>
             {filter === "trips" || filter === "places"
               ? "Trips and places need photos with GPS. Phones add it when location is on for the camera."
-              : "Select photos in the Library, then choose “Add to album”."}
+              : `Select photos in the ${priv ? "Private timeline" : "Library"}, then choose “Add to album”.`}
           </span>
         </div>
       )}
@@ -167,9 +178,9 @@ export function AlbumsView({ active }: { active: boolean }) {
           onDone={async (name) => {
             setNaming(false);
             if (!name) return;
-            const id = await api.albumCreate(name, []);
+            const id = await api.albumCreate(name, [], priv);
             toast(`“${name}” created · select photos and choose “Add to album”`);
-            openAlbum(id, name);
+            openAlbum(id, name, priv);
           }}
         />
       )}
@@ -177,16 +188,16 @@ export function AlbumsView({ active }: { active: boolean }) {
   );
 }
 
-export async function openAlbum(id: number, title: string) {
+export async function openAlbum(id: number, title: string, priv?: boolean) {
   const ids = await api.albumItems(id);
-  store.set({ view: "albums", album: { kind: "album", id, title, ids } });
+  store.set({ view: priv ? "private" : "albums", album: { kind: "album", id, title, ids } });
 }
-export async function openDir(dir: string, title: string) {
+export async function openDir(dir: string, title: string, priv?: boolean) {
   const ids = await api.dirItems(dir);
-  store.set({ view: "albums", album: { kind: "dir", dir, title, ids } });
+  store.set({ view: priv ? "private" : "albums", album: { kind: "dir", dir, title, ids } });
 }
 
-function AlbumPage({ lib, page, active, onChanged }: { lib: Lib; page: Page; active: boolean; onChanged: () => void }) {
+function AlbumPage({ lib, page, active, onChanged, priv }: { lib: Lib; page: Page; active: boolean; onChanged: () => void; priv?: boolean }) {
   const [renaming, setRenaming] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const order = useMemo(() => page.ids.map((id) => lib.pos.get(id)).filter((i): i is number => i != null), [page.ids, lib]);
@@ -219,6 +230,12 @@ function AlbumPage({ lib, page, active, onChanged }: { lib: Lib; page: Page; act
           <Icon n="check" s={16} />
           Select all
         </button>
+        {page.kind === "dir" && !priv && page.dir && (
+          <button className="btn" onClick={() => makePrivate(page.dir!, back)} title="Hide this folder in the Private space">
+            <Icon n="lock" s={16} />
+            Move to Private
+          </button>
+        )}
         {page.kind === "person" && <PersonActions page={page} onChanged={onChanged} />}
         {page.kind === "album" && (
           <>
@@ -266,10 +283,12 @@ function AlbumPage({ lib, page, active, onChanged }: { lib: Lib; page: Page; act
         empty={
           <div className="empty">
             <b>This album is empty</b>
-            <span>Select photos in the Library and choose “Add to album”.</span>
-            <button className="btn" onClick={() => store.set({ view: "library", album: null })}>
-              Go to Library
-            </button>
+            <span>Select photos in the {priv ? "Private timeline" : "Library"} and choose “Add to album”.</span>
+            {!priv && (
+              <button className="btn" onClick={() => store.set({ view: "library", album: null })}>
+                Go to Library
+              </button>
+            )}
           </div>
         }
       />
