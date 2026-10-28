@@ -5,6 +5,7 @@
 //! never leave the machine.
 
 pub mod clip;
+pub mod edit;
 pub mod faces;
 pub mod fetch;
 pub mod people;
@@ -128,6 +129,80 @@ const PEOPLE: [Asset; 2] = [
     },
 ];
 
+/// AI editing models (stage 5), one optional pack per feature.
+const ERASE: [Asset; 1] = [Asset {
+    // LaMa (Apache-2.0): fills a masked region from its surroundings
+    file: "lama.onnx",
+    url: "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx",
+    sha256: "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6",
+    size: 208_044_816,
+    member: None,
+}];
+const SUBJECT: [Asset; 1] = [Asset {
+    // BiRefNet-lite (MIT): the main subject, as a soft mask
+    file: "birefnet.onnx",
+    url: "https://huggingface.co/onnx-community/BiRefNet_lite-ONNX/resolve/main/onnx/model_fp16.onnx",
+    sha256: "d39b897ceb16ae654c1731f3dba0cf9b368d9cae74b5a57459b455cc8bfec402",
+    size: 114_538_221,
+    member: None,
+}];
+const SKY: [Asset; 1] = [Asset {
+    // U2-Net sky segmentation (MIT)
+    file: "skyseg.onnx",
+    url: "https://huggingface.co/JianyuanWang/skyseg/resolve/main/skyseg.onnx",
+    sha256: "ab9c34c64c3d821220a2886a4a06da4642ffa14d5b30e8d5339056a089aa1d39",
+    size: 175_997_079,
+    member: None,
+}];
+const DENOISE: [Asset; 1] = [Asset {
+    // NAFNet trained on SIDD real-camera noise (MIT)
+    file: "nafnet.onnx",
+    url: "https://huggingface.co/tomfl/obscura-models/resolve/main/nafnet-sidd-w32-fp16.onnx",
+    sha256: "74bb136d6e78ebab8490c7db29b5bda37c270bd382a03990c66d9cc17271f581",
+    size: 58_957_563,
+    member: None,
+}];
+const UPSCALE: [Asset; 1] = [Asset {
+    // Real-ESRGAN general x4v3 (BSD-3-Clause)
+    file: "esrgan.onnx",
+    url: "https://huggingface.co/jonathanst29/tinier-upscale-models/resolve/main/realesr-general-x4v3.onnx",
+    sha256: "924ebad6532777303582d4ce7811849b88869231a3ae7093e0f21200249df8d5",
+    size: 4_866_396,
+    member: None,
+}];
+const DEPTH: [Asset; 1] = [Asset {
+    // Depth Anything V2 Small (Apache-2.0)
+    file: "depth.onnx",
+    url: "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx",
+    sha256: "afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c",
+    size: 99_060_839,
+    member: None,
+}];
+
+/// Every optional pack: key, display name, files.
+const PACKS: [(&str, &str, &[Asset]); 8] = [
+    ("search", "Search model", &SEARCH),
+    ("people", "Face models", &PEOPLE),
+    ("erase", "Remove objects model", &ERASE),
+    ("subject", "Subject model", &SUBJECT),
+    ("sky", "Sky model", &SKY),
+    ("denoise", "Denoise model", &DENOISE),
+    ("upscale", "Upscale model", &UPSCALE),
+    ("depth", "Depth model", &DEPTH),
+];
+
+fn pack(key: &str) -> Option<(&'static str, &'static [Asset])> {
+    PACKS.iter().find(|p| p.0 == key).map(|p| (p.1, p.2))
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Pack {
+    pub key: &'static str,
+    pub on: bool,
+    pub mb: u64,
+}
+
 fn es<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
@@ -155,6 +230,8 @@ pub struct AiStatus {
     pub pending: i64,
     pub faces: i64,
     pub working: bool,
+    /// Every optional pack (search, people and the editing models), installed or not.
+    pub packs: Vec<Pack>,
 }
 
 #[derive(Default)]
@@ -163,10 +240,14 @@ struct Engines {
     text: Option<Session>,
     det: Option<Session>,
     rec: Option<Session>,
+    /// Editing models, loaded on first use and released when the editor closes.
+    edit: std::collections::HashMap<&'static str, Session>,
 }
 
 pub struct Ai {
     pub dir: PathBuf,
+    /// Pixels made by AI edits, content-addressed (`{hash}.png`), referenced from edit stacks.
+    pub layers: PathBuf,
     env: Mutex<Option<ort::environment::Environment>>,
     engines: Mutex<Engines>,
     tok: Mutex<Option<Arc<clip::Tokenizer>>>,
@@ -185,6 +266,7 @@ pub struct Index {
 impl Ai {
     pub fn new(dir: PathBuf) -> Self {
         Self {
+            layers: dir.parent().map(|p| p.join("layers")).unwrap_or_else(|| dir.join("layers")),
             dir,
             env: Mutex::new(None),
             engines: Mutex::new(Engines::default()),
@@ -211,6 +293,9 @@ impl Ai {
     pub fn any_on(&self) -> bool {
         self.search_on() || self.people_on()
     }
+    pub fn pack_on(&self, key: &str) -> bool {
+        self.runtime_ok() && pack(key).is_some_and(|(_, a)| self.has(a))
+    }
 
     pub fn status(&self, c: &Connection) -> AiStatus {
         let mb = |a: &[Asset]| a.iter().map(|x| x.size).sum::<u64>() / 1_000_000;
@@ -228,14 +313,16 @@ impl Ai {
             pending: if s || p { count(&pending_sql(s, p, true)) } else { 0 },
             faces: count("SELECT COUNT(*) FROM faces"),
             working: self.working.load(Ordering::Relaxed),
+            packs: PACKS.iter().map(|(k, _, a)| Pack { key: k, on: self.pack_on(k), mb: mb(a) }).collect(),
         }
     }
 
     // ---------- install ----------
 
-    /// Download what `feature` needs ("search" or "people") on a background thread, reporting progress.
+    /// Download what `feature` needs (a pack key) on a background thread, reporting progress.
     pub fn install(self: &Arc<Self>, app: AppHandle, feature: String, done: impl FnOnce() + Send + 'static) -> Result<(), String> {
         let rt = RUNTIME.as_ref().ok_or("On-device AI isn't available for this kind of computer yet.")?;
+        let (name, models) = pack(&feature).ok_or("Unknown AI feature")?;
         if self.installing.swap(true, Ordering::SeqCst) {
             return Err("A download is already running.".into());
         }
@@ -245,14 +332,13 @@ impl Ai {
             .spawn(move || {
                 let res = (|| -> Result<(), String> {
                     std::fs::create_dir_all(&me.dir).map_err(es)?;
-                    let models: &[Asset] = if feature == "people" { &PEOPLE } else { &SEARCH };
                     let mut todo: Vec<(&Asset, String)> = vec![];
                     if !me.runtime_ok() {
                         todo.push((rt, "AI runtime".into()));
                     }
                     for a in models {
                         if !me.dir.join(a.file).is_file() {
-                            todo.push((a, if feature == "people" { "Face models".into() } else { "Search model".into() }));
+                            todo.push((a, name.into()));
                         }
                     }
                     let total: u64 = todo.iter().map(|(a, _)| a.size).sum();
@@ -302,6 +388,11 @@ impl Ai {
                 let _ = std::fs::remove_file(self.dir.join(a.file));
             }
             c.execute_batch("DELETE FROM faces; DELETE FROM people; UPDATE ai_done SET faces=0;").map_err(es)?;
+        } else if let Some((_, files)) = pack(feature).filter(|_| feature != "search") {
+            e.edit.clear();
+            for a in files {
+                let _ = std::fs::remove_file(self.dir.join(a.file));
+            }
         } else {
             e.vision = None;
             e.text = None;
@@ -377,34 +468,38 @@ impl Ai {
             .collect())
     }
 
-    /// Faces in an image: boxes in image pixels and normalized 128-d embeddings.
-    fn faces(&self, img: &RgbImage) -> Result<Vec<(faces::Det, Vec<f32>)>, String> {
+    /// Faces in an image (boxes and landmarks in image pixels), big enough to recognize.
+    fn faces_raw(&self, img: &RgbImage) -> Result<Vec<faces::Det>, String> {
         let mut e = self.engines.lock().unwrap();
         if e.det.is_none() {
             e.det = Some(self.session("yunet.onnx")?);
         }
+        let (input, scale) = faces::det_input(img);
+        let det = e.det.as_mut().unwrap();
+        let s = faces::DET_SIZE as usize;
+        let out = det.run(ort::inputs!["input" => Tensor::from_array(([1usize, 3, s, s], input)).map_err(es)?]).map_err(es)?;
+        let get = |name: &str| -> Result<Vec<f32>, String> { Ok(out[name].try_extract_tensor::<f32>().map_err(es)?.1.to_vec()) };
+        let (c8, c16, c32) = (get("cls_8")?, get("cls_16")?, get("cls_32")?);
+        let (o8, o16, o32) = (get("obj_8")?, get("obj_16")?, get("obj_32")?);
+        let (b8, b16, b32) = (get("bbox_8")?, get("bbox_16")?, get("bbox_32")?);
+        let (k8, k16, k32) = (get("kps_8")?, get("kps_16")?, get("kps_32")?);
+        let found = faces::decode([&c8, &c16, &c32], [&o8, &o16, &o32], [&b8, &b16, &b32], [&k8, &k16, &k32], scale, 0.82);
+        // small faces make poor embeddings; leave them out
+        let min_side = (img.width().max(img.height()) as f32 / 40.0).max(36.0);
+        Ok(found.into_iter().filter(|d| d.w.min(d.h) >= min_side).take(24).collect())
+    }
+
+    /// Faces in an image: boxes in image pixels and normalized 128-d embeddings.
+    fn faces(&self, img: &RgbImage) -> Result<Vec<(faces::Det, Vec<f32>)>, String> {
+        let found = self.faces_raw(img)?;
+        let mut e = self.engines.lock().unwrap();
         if e.rec.is_none() {
             e.rec = Some(self.session("sface.onnx")?);
         }
-        let (input, scale) = faces::det_input(img);
-        let found = {
-            let det = e.det.as_mut().unwrap();
-            let s = faces::DET_SIZE as usize;
-            let out = det.run(ort::inputs!["input" => Tensor::from_array(([1usize, 3, s, s], input)).map_err(es)?]).map_err(es)?;
-            let get = |name: &str| -> Result<Vec<f32>, String> { Ok(out[name].try_extract_tensor::<f32>().map_err(es)?.1.to_vec()) };
-            let (c8, c16, c32) = (get("cls_8")?, get("cls_16")?, get("cls_32")?);
-            let (o8, o16, o32) = (get("obj_8")?, get("obj_16")?, get("obj_32")?);
-            let (b8, b16, b32) = (get("bbox_8")?, get("bbox_16")?, get("bbox_32")?);
-            let (k8, k16, k32) = (get("kps_8")?, get("kps_16")?, get("kps_32")?);
-            faces::decode([&c8, &c16, &c32], [&o8, &o16, &o32], [&b8, &b16, &b32], [&k8, &k16, &k32], scale, 0.82)
-        };
-        // small faces make poor embeddings; leave them out
-        let min_side = (img.width().max(img.height()) as f32 / 40.0).max(36.0);
-        let mut res = vec![];
         let rec = e.rec.as_mut().unwrap();
-        for d in found.into_iter().filter(|d| d.w.min(d.h) >= min_side).take(24) {
-            let out =
-                rec.run(ort::inputs!["data" => Tensor::from_array(([1usize, 3, 112, 112], faces::aligned(img, &d))).map_err(es)?]).map_err(es)?;
+        let mut res = vec![];
+        for d in found {
+            let out = rec.run(ort::inputs!["data" => Tensor::from_array(([1usize, 3, 112, 112], faces::aligned(img, &d))).map_err(es)?]).map_err(es)?;
             let mut v = out["fc1"].try_extract_tensor::<f32>().map_err(es)?.1.to_vec();
             clip::normalize(&mut v);
             res.push((d, v));
@@ -636,6 +731,28 @@ mod tests {
         for i in 0..all.len() {
             for j in i + 1..all.len() {
                 println!("  {} ~ {}: {:.3}", all[i].0, all[j].0, faces::cosine(&all[i].1, &all[j].1));
+            }
+        }
+    }
+}
+
+/// Delete layer files that no saved edit stack mentions.
+pub fn gc_layers(db_path: &Path, layers: &Path) {
+    let Ok(c) = db::open(db_path) else { return };
+    let Ok(stacks) = (|| -> rusqlite::Result<Vec<String>> {
+        let mut st = c.prepare("SELECT stack FROM edits")?;
+        let rows = st.query_map([], |r| r.get(0))?;
+        rows.collect()
+    })() else {
+        return;
+    };
+    let all = stacks.join("\n");
+    let Ok(dir) = std::fs::read_dir(layers) else { return };
+    for e in dir.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if let Some(hash) = name.strip_suffix(".png") {
+            if !all.contains(hash) {
+                let _ = std::fs::remove_file(e.path());
             }
         }
     }

@@ -32,6 +32,9 @@ pub async fn serve(app: AppHandle, req: Request<Vec<u8>>, mode: Mode) -> Respons
     if mode == Mode::Thumb && req.uri().path().starts_with("/face/") {
         return face(app, req).await;
     }
+    if mode == Mode::Thumb && req.uri().path().starts_with("/layer/") {
+        return layer(app, req).await;
+    }
     let id: Option<i64> = req.uri().path().trim_start_matches('/').split('/').next().and_then(|s| s.parse().ok());
     let Some(id) = id else { return reply(StatusCode::BAD_REQUEST, b"bad id".to_vec(), false) };
     let Some(state) = app.try_state::<AppState>() else {
@@ -96,5 +99,27 @@ async fn face(app: AppHandle, req: Request<Vec<u8>>) -> Response<Vec<u8>> {
         Ok(Ok(bytes)) => reply(StatusCode::OK, bytes, true),
         Ok(Err(e)) => reply(StatusCode::UNPROCESSABLE_ENTITY, e.into_bytes(), false),
         Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, b"render panicked".to_vec(), false),
+    }
+}
+
+/// `thumb://localhost/layer/{hash}`: pixels made by an AI edit.
+async fn layer(app: AppHandle, req: Request<Vec<u8>>) -> Response<Vec<u8>> {
+    let hash = req.uri().path().trim_start_matches("/layer/").to_string();
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return reply(StatusCode::BAD_REQUEST, b"bad layer".to_vec(), false);
+    }
+    let Some(state) = app.try_state::<AppState>() else {
+        return reply(StatusCode::SERVICE_UNAVAILABLE, b"starting".to_vec(), false);
+    };
+    let path = state.ai.layers.join(format!("{hash}.png"));
+    match tauri::async_runtime::spawn_blocking(move || std::fs::read(path)).await {
+        Ok(Ok(bytes)) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(header::CONTENT_TYPE, "image/png")
+            .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable")
+            .body(bytes)
+            .unwrap(),
+        _ => reply(StatusCode::NOT_FOUND, b"missing layer".to_vec(), false),
     }
 }

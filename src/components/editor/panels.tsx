@@ -1,7 +1,7 @@
 // The editor's right-hand panels, one per tool.
 import { useState } from "react";
 import { LOOKS } from "../../lib/edit/looks";
-import { BANDS, COLOR, defaults, EFFECTS, LIGHT, LOCAL, MAX_MASKS, type AdjKey, type Geo, type Mask, type Pt, type Spec, type Stack } from "../../lib/edit/stack";
+import { BANDS, COLOR, defaults, EFFECTS, LIGHT, LOCAL, MAX_MASKS, type AdjKey, type Geo, type Pt, type Spec, type Stack } from "../../lib/edit/stack";
 import { Icon } from "../Icon";
 import { ColorWheel, CurveEditor, Group, okHue, Seg, Slider, type Channel } from "./controls";
 
@@ -253,7 +253,7 @@ function aspectBox(k: string): React.CSSProperties {
 
 // ---------- masks ----------
 
-const KIND_ICON = { linear: "linear", radial: "radial", brush: "brush" } as const;
+const KIND_ICON = { linear: "linear", radial: "radial", brush: "brush", ai: "spark" } as const;
 const KIND_NAME = { linear: "Linear gradient", radial: "Radial", brush: "Brush" } as const;
 
 export function MasksPanel({
@@ -271,7 +271,7 @@ export function MasksPanel({
   up: Up;
   sel: number;
   setSel: (i: number) => void;
-  add: (k: Mask["kind"]) => void;
+  add: (k: "linear" | "radial" | "brush") => void;
   overlay: boolean;
   setOverlay: (v: boolean) => void;
   brush: { size: number; feather: number; flow: number; erase: boolean };

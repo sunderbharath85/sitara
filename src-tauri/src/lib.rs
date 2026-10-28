@@ -78,6 +78,11 @@ pub fn run() {
             for (id, path) in roots {
                 commands::start_watch(h, &state, id, Path::new(&path));
             }
+            // AI-edit layers no saved edit refers to (abandoned edits) are deleted
+            {
+                let (db_path, layers) = (state.db_path.clone(), state.ai.layers.clone());
+                std::thread::spawn(move || ai::gc_layers(&db_path, &layers));
+            }
             // catch up on changes made while the app was closed
             let _ = state.indexer.tx.send(scan::Job::ScanAll);
             Ok(())
@@ -121,6 +126,9 @@ pub fn run() {
             commands::person_merge,
             commands::person_hide,
             commands::person_remove,
+            commands::ai_op,
+            commands::ai_layer_put,
+            commands::ai_release,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Sitara");

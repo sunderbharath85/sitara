@@ -474,3 +474,82 @@ pub fn person_remove(app: AppHandle, s: State<'_, AppState>, id: i64, ids: Vec<i
     let _ = app.emit("ai-changed", ());
     Ok(())
 }
+
+// ---------- AI editing ----------
+
+#[derive(serde::Deserialize)]
+struct OpHead {
+    op: String,
+    w: u32,
+    h: u32,
+    /// Text for "rank".
+    q: Option<String>,
+    /// Number of images for "rank".
+    n: Option<usize>,
+}
+
+fn rgba(img: image::RgbImage) -> Vec<u8> {
+    img.pixels().flat_map(|p| [p[0], p[1], p[2], 255]).collect()
+}
+
+/// AI editing on pixels the editor sends (RGBA, upright sRGB). Images come back as RGBA, masks as one byte
+/// per pixel, faces and ranks as JSON.
+#[tauri::command]
+pub async fn ai_op(s: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> R<Response> {
+    use crate::ai::edit;
+    let (head, body): (OpHead, &[u8]) = raw_body(&request)?;
+    let (ai, body) = (s.ai.clone(), body.to_vec());
+    tauri::async_runtime::spawn_blocking(move || -> R<Response> {
+        let (w, h) = (head.w, head.h);
+        let px = (w * h) as usize;
+        let rgb = |b: &[u8]| -> R<image::RgbImage> {
+            image::RgbImage::from_raw(w, h, b.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()).ok_or_else(|| "bad image".to_string())
+        };
+        let n = head.n.unwrap_or(1).max(1);
+        if body.len() < px * 4 * if head.op == "rank" { n } else { 1 } {
+            return Err("The image data is incomplete".into());
+        }
+        let out: Vec<u8> = match head.op.as_str() {
+            "inpaint" => {
+                let mask = image::GrayImage::from_raw(w, h, body.get(px * 4..px * 5).ok_or("missing mask")?.to_vec()).ok_or("bad mask")?;
+                rgba(edit::inpaint(&ai, &rgb(&body[..px * 4])?, &mask)?)
+            }
+            "subject" => edit::subject(&ai, &rgb(&body[..px * 4])?)?.into_raw(),
+            "sky" => edit::sky(&ai, &rgb(&body[..px * 4])?)?.into_raw(),
+            "depth" => edit::depth(&ai, &rgb(&body[..px * 4])?)?.into_raw(),
+            "denoise" => rgba(edit::denoise(&ai, &rgb(&body[..px * 4])?)?),
+            "upscale" => rgba(edit::upscale(&ai, &rgb(&body[..px * 4])?)?),
+            "faces" => serde_json::to_vec(&edit::faces(&ai, &rgb(&body[..px * 4])?)?).map_err(e)?,
+            "rank" => {
+                let imgs = (0..n).map(|k| rgb(&body[k * px * 4..(k + 1) * px * 4])).collect::<R<Vec<_>>>()?;
+                serde_json::to_vec(&edit::rank(&ai, head.q.as_deref().unwrap_or(""), &imgs)?).map_err(e)?
+            }
+            other => return Err(format!("unknown AI operation {other}")),
+        };
+        Ok(Response::new(out))
+    })
+    .await
+    .map_err(e)?
+}
+
+/// Keep pixels an AI edit made (PNG), content-addressed; edit stacks refer to them by hash.
+#[tauri::command]
+pub async fn ai_layer_put(s: State<'_, AppState>, request: tauri::ipc::Request<'_>) -> R<String> {
+    let tauri::ipc::InvokeBody::Raw(png) = request.body() else { return Err("expected a binary body".into()) };
+    if png.len() < 8 || png[..8] != *b"\x89PNG\r\n\x1a\n" {
+        return Err("expected a PNG".into());
+    }
+    let hash = blake3::hash(png).to_hex().to_string();
+    let path = s.ai.layers.join(format!("{hash}.png"));
+    if !path.exists() {
+        std::fs::create_dir_all(&s.ai.layers).map_err(e)?;
+        thumbs::write_atomic(&path, png);
+    }
+    Ok(hash)
+}
+
+/// The editor closed: free the editing models.
+#[tauri::command]
+pub fn ai_release(s: State<'_, AppState>) {
+    s.ai.release_edit();
+}

@@ -821,3 +821,39 @@ body.editing #toasts { bottom: 30px; }
 .person-title { display: flex; align-items: center; gap: 18px; }
 .person-face { width: 76px; height: 76px; border-radius: 50%; object-fit: cover; box-shadow: 0 0 0 3px rgba(255, 107, 61, 0.55), 0 16px 40px -14px var(--acc); animation: pop 0.5s var(--spring) both; }
 .person-title h2.unnamed { color: var(--muted); }
+
+/* ---------- AI editing ---------- */
+.ai-describe { margin: 6px 0 4px; }
+.ai-describe label { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+.ai-describe label svg { color: var(--acc); }
+.ai-describe form { display: flex; flex-direction: column; gap: 8px; }
+.ai-describe textarea { width: 100%; resize: none; font: inherit; font-size: 13px; color: var(--text); background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line2); border-radius: 12px; padding: 10px 12px; outline: none; transition: border-color 0.2s; }
+.ai-describe textarea:focus { border-color: var(--acc); box-shadow: 0 0 0 4px var(--acc-soft); }
+.ai-describe .btn-acc { align-self: flex-end; height: 32px; }
+.ai-describe .ai-eg { margin-top: 10px; }
+.ai-eg button { font-size: 11px; padding: 3px 9px; border-radius: 999px; background: rgba(255, 255, 255, 0.06); color: var(--muted); transition: 0.2s; }
+.ai-eg button:hover { color: var(--text); background: var(--acc-soft); }
+.ai-row { display: flex; gap: 8px; margin: 4px 0 6px; }
+.ai-row .btn { flex: 1; justify-content: center; }
+.btn.on-acc { border-color: var(--acc); color: var(--acc); background: var(--acc-soft); }
+.ai-picks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.ai-picks .btn { flex: 1 1 30%; justify-content: center; }
+.ai-picks .ai-need { flex: 1 1 100%; }
+.ai-need { display: flex; flex-direction: column; gap: 5px; margin: 4px 0 6px; }
+.ai-need small { font-size: 11px; color: var(--dim); }
+.ai-need .btn { align-self: flex-start; }
+.ai-dl.mini { margin: 0; height: 30px; font-size: 11.5px; }
+button.link { color: var(--acc); font-size: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.ai-busy { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 6; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 22px 30px; border-radius: 20px; background: rgba(8, 8, 10, 0.78); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); border: 1px solid var(--line2); box-shadow: 0 30px 80px -20px #000; animation: pop 0.35s var(--spring) both; min-width: 220px; }
+.ai-busy b { font-size: 15px; }
+.ai-busy small { font-size: 11px; color: var(--dim); letter-spacing: 0.08em; text-transform: uppercase; }
+.ai-busy i { width: 180px; height: 4px; border-radius: 4px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
+.ai-busy em { display: block; height: 100%; background: var(--acc); transition: width 0.2s; }
+.ai-orb.spin svg { animation: aiSpin 2.4s linear infinite; }
+.erase-ui { position: absolute; inset: 0; cursor: none; touch-action: none; }
+.erase-path { fill: none; stroke: rgba(255, 70, 70, 0.45); stroke-linecap: round; stroke-linejoin: round; }
+.brush-cur.erase-cur { border-color: #ff6b6b; }
+.ai-edit-packs { position: relative; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+.ai-edit-packs b { color: var(--text); font-size: 13.5px; }
+.ai-edit-packs .ai-eg { flex-basis: 100%; }
+.ai-eg .pack { display: inline-flex; align-items: center; gap: 6px; }

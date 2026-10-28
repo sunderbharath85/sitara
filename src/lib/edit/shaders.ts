@@ -328,3 +328,93 @@ void main() {
   if (uShowMask >= 0) g = mix(g, vec3(1.0, 0.36, 0.2), shown * 0.62);
   o = vec4(g, src.a);
 }`;
+
+// ---------- AI editing passes ----------
+
+const ENCODE = `
+// linear light back into the source's encoding (see dec)
+vec3 encode(vec3 lin) { return uEnc == 1 ? log(1.0 + 64.0 * clamp(lin, 0.0, 8.0)) / 6.2402758 : l2s(lin); }
+`;
+
+/** A denoised or upscaled copy (sRGB layer) blended over the source. */
+export const COMBINE = `${HEAD}${COMMON}${ENCODE}
+uniform sampler2D uImg;
+uniform sampler2D uBase;
+uniform float uAmt;
+uniform vec2 uSize;
+out vec4 o;
+void main() {
+  vec2 uv = gl_FragCoord.xy / uSize;
+  vec4 c = texture(uImg, uv);
+  o = vec4(mix(c.rgb, encode(s2l(texture(uBase, uv).rgb)), uAmt), c.a);
+}`;
+
+/** A removal patch (sRGB, alpha = feathered mask) drawn over its rectangle. */
+export const PATCH_VERT = `#version 300 es
+uniform vec4 uRect;
+out vec2 vT;
+void main() {
+  vec2 k = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
+  vT = k;
+  gl_Position = vec4((uRect.xy + k * uRect.zw) * 2.0 - 1.0, 0.0, 1.0);
+}`;
+export const PATCH = `${HEAD}${COMMON}${ENCODE}
+uniform sampler2D uPatch;
+in vec2 vT;
+out vec4 o;
+void main() {
+  vec4 p = texture(uPatch, vT);
+  o = vec4(encode(s2l(p.rgb)), p.a);
+}`;
+
+/** Background blur: radius grows with distance behind the focus plane; the subject stays sharp and doesn't bleed. */
+export const LENS = `${HEAD}
+uniform sampler2D uImg;
+uniform sampler2D uDepth;
+uniform sampler2D uSubj;
+uniform int uHasSubj;
+uniform vec2 uSize;
+uniform float uAmt;
+uniform float uFocus;
+uniform float uMaxR;
+out vec4 o;
+void main() {
+  vec2 uv = gl_FragCoord.xy / uSize;
+  float d = texture(uDepth, uv).r;
+  float s = uHasSubj == 1 ? texture(uSubj, uv).r : 0.0;
+  float r = uAmt * uMaxR * smoothstep(0.0, 0.45, uFocus - d) * (1.0 - s);
+  vec4 c = texture(uImg, uv);
+  if (r < 0.75) { o = c; return; }
+  float lod = max(0.0, log2(r / 6.0));
+  vec4 acc = vec4(0.0);
+  float ws = 0.0;
+  for (int i = 0; i < 28; i++) {
+    float a = float(i) * 2.39996;
+    vec2 q = uv + vec2(cos(a), sin(a)) * r * sqrt((float(i) + 0.5) / 28.0) / uSize;
+    float w = 1.0 - (uHasSubj == 1 ? texture(uSubj, q).r : 0.0);
+    acc += textureLod(uImg, q, lod) * w;
+    ws += w;
+  }
+  o = ws > 0.05 ? acc / ws : c;
+}`;
+
+/** An AI mask layer copied into one channel of the mask atlas. */
+export const MASKCOPY = `${HEAD}
+uniform sampler2D uMask;
+uniform vec2 uSize;
+out vec4 o;
+void main() { o = vec4(texture(uMask, gl_FragCoord.xy / uSize).r); }`;
+
+/** Pixels for an AI model: a source rectangle, decoded, as upright sRGB. */
+export const EXTRACT = `${HEAD}${COMMON}
+uniform sampler2D uImg;
+uniform vec4 uRect;
+uniform vec2 uSize;
+out vec4 o;
+void main() {
+  vec2 uv = uRect.xy + gl_FragCoord.xy / uSize * uRect.zw;
+  vec3 c = dec(texture(uImg, uv).rgb);
+  // RAW headroom: roll highlights into range rather than clipping them
+  if (uEnc == 1) c = mix(c, 1.0 - exp(-c), smoothstep(0.7, 1.4, c));
+  o = vec4(l2s(min(c, vec3(1.0))), 1.0);
+}`;

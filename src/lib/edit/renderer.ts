@@ -3,7 +3,7 @@
 import { buildLut, LUT_N } from "./curve";
 import { glMat, mul, type Mat } from "./geometry";
 import { lookById } from "./looks";
-import { BLUR, DAB, DAB_VERT, DEVELOP, HEAL, PREP, VERT } from "./shaders";
+import { BLUR, COMBINE, DAB, DAB_VERT, DEVELOP, EXTRACT, HEAL, LENS, MASKCOPY, PATCH, PATCH_VERT, PREP, VERT } from "./shaders";
 import { curveIsFlat, MAX_MASKS, MAX_SPOTS, type Stack, type Stroke } from "./stack";
 
 /** Decoded source pixels, upright. `small` is a CPU copy (encoded RGB, 0..1) for heal search and auto tone. */
@@ -48,12 +48,25 @@ export class Renderer {
   W = 0;
   H = 0;
   enc: 0 | 1 = 0;
-  private progs: Record<"heal" | "prep" | "blur" | "dab" | "dev", Prog>;
+  private progs: Record<"heal" | "prep" | "blur" | "dab" | "dev" | "combine" | "patch" | "lens" | "maskcopy" | "extract", Prog>;
   private vao: WebGLVertexArrayObject;
   private dabVao: WebGLVertexArrayObject;
   private dabBuf: WebGLBuffer;
   private src: WebGLTexture | null = null;
+  private srcW = 0;
+  private srcH = 0;
+  /** Source with a denoised/upscaled base blended in. */
+  private based: RT | null = null;
   private healed: RT | null = null;
+  /** After background blur. */
+  private lensed: RT | null = null;
+  private baseKey = "";
+  private lensKey = "";
+  /** Pixels made by AI edits, by hash; null while loading. */
+  private layers = new Map<string, { tex: WebGLTexture; w: number; h: number } | null>();
+  layerUrl: (hash: string) => string = (h) => h;
+  /** Called when a layer finishes loading, so the editor can redraw. */
+  onLayer: () => void = () => {};
   private blurA: RT | null = null;
   private blurB: RT | null = null;
   private atlas: [RT, RT] | null = null;
@@ -91,6 +104,11 @@ export class Renderer {
       blur: this.prog(VERT, BLUR),
       dab: this.prog(DAB_VERT, DAB),
       dev: this.prog(VERT, DEVELOP),
+      combine: this.prog(VERT, COMBINE),
+      patch: this.prog(PATCH_VERT, PATCH),
+      lens: this.prog(VERT, LENS),
+      maskcopy: this.prog(VERT, MASKCOPY),
+      extract: this.prog(VERT, EXTRACT),
     };
     this.vao = gl.createVertexArray()!;
     this.dabVao = gl.createVertexArray()!;
@@ -166,11 +184,11 @@ export class Renderer {
   load(s: Source) {
     const gl = this.gl;
     if (this.src) gl.deleteTexture(this.src);
-    [this.healed, this.blurA, this.blurB].forEach((r) => this.drop(r));
+    [this.healed, this.blurA, this.blurB, this.based, this.lensed].forEach((r) => this.drop(r));
     this.atlas?.forEach((r) => this.drop(r));
-    this.healed = this.atlas = null;
-    this.W = s.w;
-    this.H = s.h;
+    this.healed = this.atlas = this.based = this.lensed = null;
+    this.W = this.srcW = s.w;
+    this.H = this.srcH = s.h;
     this.enc = s.enc;
     this.src = this.tex(true);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
@@ -185,8 +203,75 @@ export class Renderer {
       bh = Math.max(8, Math.round(s.h * sc));
     this.blurA = this.rt(bw, bh);
     this.blurB = this.rt(bw, bh);
-    this.healKey = this.maskKey = this.lutKey = "";
+    this.healKey = this.maskKey = this.lutKey = this.baseKey = this.lensKey = "";
     this.blurOk = false;
+  }
+
+  // ---------- AI layers ----------
+
+  /** A layer's texture, loading it on first request (returns undefined until it's ready). */
+  private layer(hash: string) {
+    const got = this.layers.get(hash);
+    if (got !== undefined) return got ?? undefined;
+    this.layers.set(hash, null);
+    (async () => {
+      const blob = await (await fetch(this.layerUrl(hash))).blob();
+      const bmp = await createImageBitmap(blob, { premultiplyAlpha: "none", colorSpaceConversion: "none" });
+      const gl = this.gl;
+      const tex = this.tex(true);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      this.layers.set(hash, { tex, w: bmp.width, h: bmp.height });
+      bmp.close();
+      this.onLayer();
+    })().catch((e) => console.error("layer", hash, e));
+    return undefined;
+  }
+
+  /** Make a layer available right away (just created by an AI edit). */
+  addLayer(hash: string, img: ImageBitmap | ImageData | HTMLCanvasElement) {
+    const gl = this.gl;
+    const tex = this.tex(true);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    const old = this.layers.get(hash);
+    if (old) gl.deleteTexture(old.tex);
+    this.layers.set(hash, { tex, w: img.width, h: img.height });
+  }
+
+  /** The image after base, heal and patches (what a new AI edit should start from). */
+  private current(): WebGLTexture {
+    return this.healed?.tex ?? this.based?.tex ?? this.src!;
+  }
+
+  /** Upright sRGB pixels of a source-uv rectangle at (ow, oh), top row first. */
+  extract(which: "orig" | "current", rect: [number, number, number, number], ow: number, oh: number): Uint8Array {
+    const gl = this.gl;
+    const rt = this.rt(ow, oh);
+    const pr = this.progs.extract;
+    gl.useProgram(pr.p);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, rt.fbo);
+    gl.viewport(0, 0, ow, oh);
+    gl.disable(gl.BLEND);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, which === "orig" ? this.src : this.current());
+    gl.uniform1i(this.loc(pr, "uImg"), 0);
+    gl.uniform1i(this.loc(pr, "uEnc"), this.enc);
+    gl.uniform4f(this.loc(pr, "uRect"), ...rect);
+    gl.uniform2f(this.loc(pr, "uSize"), ow, oh);
+    gl.bindVertexArray(this.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    const out = new Uint8Array(ow * oh * 4);
+    gl.readPixels(0, 0, ow, oh, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.drop(rt);
+    return out;
+  }
+
+  /** Source size before any upscale. */
+  get sourceSize(): [number, number] {
+    return [this.srcW, this.srcH];
   }
 
   get asp(): [number, number] {
@@ -199,9 +284,105 @@ export class Renderer {
   setStack(s: Stack) {
     if (!this.src) return;
     this.uniforms(s);
+    this.base(s);
     this.heal(s);
     if (!this.blurOk) this.blur();
+    this.lens(s);
     this.masks(s);
+  }
+
+  /** Denoised or upscaled base blended over the source; an upscale changes the working size. */
+  private base(s: Stack) {
+    const b = s.ai.base;
+    const key = b ? `${b.kind}:${b.layer}:${b.amount}` : "";
+    if (key === this.baseKey) return;
+    const gl = this.gl;
+    const L = b ? this.layer(b.layer) : undefined;
+    if (b && !L) return; // retried once the layer loads
+    this.baseKey = key;
+    this.healKey = this.lensKey = "";
+    this.blurOk = false;
+    const [w, h] = b?.kind === "upscale" && L ? [L.w, L.h] : [this.srcW, this.srcH];
+    if (!b || !L) {
+      this.drop(this.based);
+      this.based = null;
+      this.W = w;
+      this.H = h;
+      return;
+    }
+    if (!this.based || this.based.w !== w || this.based.h !== h) {
+      this.drop(this.based);
+      this.based = this.rt(w, h, this.enc === 1 ? gl.RGB10_A2 : gl.RGBA8, true);
+    }
+    this.W = w;
+    this.H = h;
+    const pr = this.progs.combine;
+    gl.useProgram(pr.p);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.based.fbo);
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.BLEND);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.src);
+    gl.uniform1i(this.loc(pr, "uImg"), 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, L.tex);
+    gl.uniform1i(this.loc(pr, "uBase"), 1);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1i(this.loc(pr, "uEnc"), this.enc);
+    gl.uniform1f(this.loc(pr, "uAmt"), b.kind === "upscale" ? 1 : b.amount / 100);
+    gl.uniform2f(this.loc(pr, "uSize"), w, h);
+    gl.bindVertexArray(this.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindTexture(gl.TEXTURE_2D, this.based.tex);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  /** Background blur from the depth layer, sparing the subject. */
+  private lens(s: Stack) {
+    const b = s.ai.blur;
+    const key = b ? `${b.depth}:${b.subject}:${b.amount}:${b.focus}:${this.healKey}:${this.baseKey}:${this.W}` : "";
+    if (key === this.lensKey) return;
+    const gl = this.gl;
+    const D = b ? this.layer(b.depth) : undefined;
+    const S = b?.subject ? this.layer(b.subject) : undefined;
+    if (b && (!D || (b.subject && !S))) return;
+    this.lensKey = key;
+    if (!b || !D || b.amount <= 0) {
+      this.drop(this.lensed);
+      this.lensed = null;
+      return;
+    }
+    if (!this.lensed || this.lensed.w !== this.W || this.lensed.h !== this.H) {
+      this.drop(this.lensed);
+      this.lensed = this.rt(this.W, this.H, this.enc === 1 ? gl.RGB10_A2 : gl.RGBA8, true);
+    }
+    const pr = this.progs.lens;
+    gl.useProgram(pr.p);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.lensed.fbo);
+    gl.viewport(0, 0, this.W, this.H);
+    gl.disable(gl.BLEND);
+    const texs: [string, WebGLTexture][] = [
+      ["uImg", this.current()],
+      ["uDepth", D.tex],
+      ["uSubj", S?.tex ?? this.dummy],
+    ];
+    texs.forEach(([n, t], i) => {
+      gl.activeTexture(gl.TEXTURE0 + i);
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.uniform1i(this.loc(pr, n), i);
+    });
+    gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1i(this.loc(pr, "uHasSubj"), S ? 1 : 0);
+    gl.uniform2f(this.loc(pr, "uSize"), this.W, this.H);
+    gl.uniform1f(this.loc(pr, "uAmt"), b.amount / 100);
+    gl.uniform1f(this.loc(pr, "uFocus"), b.focus);
+    gl.uniform1f(this.loc(pr, "uMaxR"), 0.022 * Math.max(this.W, this.H));
+    gl.bindVertexArray(this.vao);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindTexture(gl.TEXTURE_2D, this.lensed.tex);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
   private uniforms(s: Stack) {
@@ -280,15 +461,22 @@ export class Renderer {
 
   private heal(s: Stack) {
     const spots = s.heal.slice(0, MAX_SPOTS);
-    const key = JSON.stringify(spots);
+    const patches = s.ai.patches;
+    const ready = patches.every((p) => this.layer(p.layer));
+    const key = JSON.stringify([spots, patches, this.baseKey, ready]);
     if (key === this.healKey) return;
     this.healKey = key;
     this.blurOk = false;
+    this.lensKey = "";
     const gl = this.gl;
-    if (!spots.length) {
+    if (!spots.length && !patches.length) {
       this.drop(this.healed);
       this.healed = null;
       return;
+    }
+    if (this.healed && (this.healed.w !== this.W || this.healed.h !== this.H)) {
+      this.drop(this.healed);
+      this.healed = null;
     }
     if (!this.healed) this.healed = this.rt(this.W, this.H, this.enc === 1 ? gl.RGB10_A2 : gl.RGBA8, true);
     const [ax, ay] = this.asp;
@@ -306,7 +494,7 @@ export class Renderer {
     gl.viewport(0, 0, this.W, this.H);
     gl.disable(gl.BLEND);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.src);
+    gl.bindTexture(gl.TEXTURE_2D, this.based?.tex ?? this.src);
     gl.uniform1i(this.loc(pr, "uImg"), 0);
     gl.uniform2f(this.loc(pr, "uSize"), this.W, this.H);
     gl.uniform2f(this.loc(pr, "uAsp"), ax, ay);
@@ -316,6 +504,23 @@ export class Renderer {
     gl.uniform4fv(this.loc(pr, "uC"), C);
     gl.bindVertexArray(this.vao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    // removal patches, in order, blended by their feathered alpha (keeping the target's own alpha)
+    if (patches.length) {
+      const pp = this.progs.patch;
+      gl.useProgram(pp.p);
+      gl.enable(gl.BLEND);
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
+      gl.uniform1i(this.loc(pp, "uPatch"), 0);
+      gl.uniform1i(this.loc(pp, "uEnc"), this.enc);
+      for (const p of patches) {
+        const L = this.layer(p.layer);
+        if (!L) continue;
+        gl.bindTexture(gl.TEXTURE_2D, L.tex);
+        gl.uniform4f(this.loc(pp, "uRect"), p.x, p.y, p.w, p.h);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      }
+      gl.disable(gl.BLEND);
+    }
     gl.bindTexture(gl.TEXTURE_2D, this.healed.tex);
     gl.generateMipmap(gl.TEXTURE_2D);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -332,7 +537,7 @@ export class Renderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, a.fbo);
     gl.viewport(0, 0, a.w, a.h);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.healed?.tex ?? this.src);
+    gl.bindTexture(gl.TEXTURE_2D, this.current());
     gl.uniform1i(this.loc(pr, "uImg"), 0);
     gl.uniform1i(this.loc(pr, "uEnc"), this.enc);
     gl.uniform2f(this.loc(pr, "uSize"), a.w, a.h);
@@ -355,8 +560,9 @@ export class Renderer {
   }
 
   private masks(s: Stack) {
-    const brushes = s.masks.slice(0, MAX_MASKS).map((m, i) => [m, i] as const).filter(([m]) => m.kind === "brush");
+    const brushes = s.masks.slice(0, MAX_MASKS).map((m, i) => [m, i] as const).filter(([m]) => m.kind === "brush" || m.kind === "ai");
     let key = "";
+    for (const [m, i] of brushes) if (m.kind === "ai") key += `${i}:${m.layer}:${this.layer(m.layer) ? 1 : 0};`;
     for (const [m, i] of brushes) {
       if (m.kind !== "brush") continue;
       let sum = 0;
@@ -389,9 +595,28 @@ export class Renderer {
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
       for (const [m, i] of brushes) {
-        if (m.kind !== "brush" || (i < 4 ? 0 : 1) !== side) continue;
+        if ((i < 4 ? 0 : 1) !== side) continue;
         const ch = i & 3;
         gl.colorMask(ch === 0, ch === 1, ch === 2, ch === 3);
+        if (m.kind === "ai") {
+          const L = this.layer(m.layer);
+          if (!L) continue;
+          const pm = this.progs.maskcopy;
+          gl.disable(gl.BLEND);
+          gl.useProgram(pm.p);
+          gl.bindVertexArray(this.vao);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, L.tex);
+          gl.uniform1i(this.loc(pm, "uMask"), 0);
+          gl.uniform2f(this.loc(pm, "uSize"), at.w, at.h);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          gl.enable(gl.BLEND);
+          gl.useProgram(pr.p);
+          gl.bindVertexArray(this.dabVao);
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.dabBuf);
+          continue;
+        }
+        if (m.kind !== "brush") continue;
         for (const st of m.strokes) {
           const d = dabs(st, ax, ay);
           if (!d.length) continue;
@@ -431,7 +656,7 @@ export class Renderer {
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(pr.p);
     const texs: [string, WebGLTexture][] = [
-      ["uImg", this.healed?.tex ?? this.src],
+      ["uImg", this.lensed?.tex ?? this.current()],
       ["uOrig", this.src],
       ["uBlur", this.blurA!.tex],
       ["uLut", this.lut],
@@ -515,9 +740,11 @@ export class Renderer {
   dispose() {
     const gl = this.gl;
     if (this.src) gl.deleteTexture(this.src);
-    [this.healed, this.blurA, this.blurB].forEach((r) => this.drop(r));
+    [this.healed, this.blurA, this.blurB, this.based, this.lensed].forEach((r) => this.drop(r));
     this.atlas?.forEach((r) => this.drop(r));
-    this.src = this.healed = this.atlas = null;
+    this.layers.forEach((l) => l && gl.deleteTexture(l.tex));
+    this.layers.clear();
+    this.src = this.healed = this.atlas = this.based = this.lensed = null;
     // free the context once the canvas is really gone (a remount reuses it)
     setTimeout(() => {
       if (!this.canvas.isConnected) gl.getExtension("WEBGL_lose_context")?.loseContext();

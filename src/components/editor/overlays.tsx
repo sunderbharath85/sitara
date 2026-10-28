@@ -1,7 +1,7 @@
 // Direct manipulation on the photo: the crop frame, mask handles, brush and heal spots.
 import { useRef, useState } from "react";
 import { aspectOf, ap, constrain, frame } from "../../lib/edit/geometry";
-import type { Crop, Geo, Mask, Pt, Spot } from "../../lib/edit/stack";
+import type { Crop, Geo, Mask, Pt, Spot, Stroke } from "../../lib/edit/stack";
 import type { Layout } from "../../lib/edit/view";
 
 const clamp = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
@@ -372,6 +372,53 @@ export function HealOverlay({
         return <i className="spot src" style={{ left: x, top: y, width: r * 2, height: r * 2 }} onPointerDown={(e) => grab(e, sel, "src")} onPointerMove={mv} onPointerUp={up} />;
       })()}
       {cursor && !drag.current && <i className="brush-cur heal" style={{ left: cursor[0], top: cursor[1], width: size * 2 * cssPerP, height: size * 2 * cssPerP }} />}
+    </div>
+  );
+}
+
+// ---------- remove objects (AI) ----------
+
+export function EraseOverlay({ L, strokes, size, onStroke }: { L: Layout; strokes: Stroke[]; size: number; onStroke: (ph: "start" | "move" | "end", p: Pt) => void }) {
+  const [cursor, setCursor] = useState<[number, number] | null>(null);
+  const down = useRef(false);
+  const cssPerP = Math.hypot(L.pToCss[0], L.pToCss[3]);
+  const toP = (e: React.PointerEvent): Pt => {
+    const r = (e.currentTarget as HTMLElement).closest(".ed-stage")!.getBoundingClientRect();
+    return ap(L.cssToP, e.clientX - r.left, e.clientY - r.top);
+  };
+  return (
+    <div
+      className="erase-ui"
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.currentTarget.setPointerCapture(e.pointerId);
+        down.current = true;
+        onStroke("start", toP(e));
+      }}
+      onPointerMove={(e) => {
+        const r = e.currentTarget.getBoundingClientRect();
+        setCursor([e.clientX - r.left, e.clientY - r.top]);
+        if (down.current) onStroke("move", toP(e));
+      }}
+      onPointerUp={(e) => {
+        if (!down.current) return;
+        down.current = false;
+        onStroke("end", toP(e));
+      }}
+      onPointerLeave={() => setCursor(null)}
+    >
+      <svg className="mk-svg">
+        {strokes.map((s, i) => {
+          const pts: string[] = [];
+          for (let k = 0; k + 1 < s.pts.length; k += 2) {
+            const [x, y] = ap(L.pToCss, s.pts[k], s.pts[k + 1]);
+            pts.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+          }
+          if (pts.length === 1) pts.push(pts[0]);
+          return <polyline key={i} className="erase-path" points={pts.join(" ")} style={{ strokeWidth: s.r * 2 * cssPerP }} />;
+        })}
+      </svg>
+      {cursor && <i className="brush-cur erase-cur" style={{ left: cursor[0], top: cursor[1], width: size * 2 * cssPerP, height: size * 2 * cssPerP }} />}
     </div>
   );
 }

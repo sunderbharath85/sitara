@@ -141,7 +141,13 @@ export interface BrushMask extends MaskBase {
   kind: "brush";
   strokes: Stroke[];
 }
-export type Mask = LinearMask | RadialMask | BrushMask;
+/** A mask an AI model drew (subject or sky), stored as a grayscale layer. */
+export interface AiMask extends MaskBase {
+  kind: "ai";
+  what: "subject" | "sky";
+  layer: string;
+}
+export type Mask = LinearMask | RadialMask | BrushMask | AiMask;
 export const MAX_MASKS = 8;
 
 export interface Spot {
@@ -157,6 +163,22 @@ export interface Spot {
 }
 export const MAX_SPOTS = 48;
 
+/** Pixels from "Remove objects": an RGBA layer (alpha = feathered mask) over a source-uv rectangle. */
+export interface Patch {
+  layer: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+export interface AiEdits {
+  /** A denoised or upscaled copy that stands in for the source. */
+  base: { kind: "denoise" | "upscale"; layer: string; amount: number } | null;
+  patches: Patch[];
+  /** Background blur from a depth map, sparing the subject. */
+  blur: { depth: string; subject: string | null; amount: number; focus: number } | null;
+}
+
 export interface Stack {
   v: 1;
   adj: Record<AdjKey, number>;
@@ -168,6 +190,7 @@ export interface Stack {
   geo: Geo;
   masks: Mask[];
   heal: Spot[];
+  ai: AiEdits;
 }
 
 const LINE = (): Pt[] => [
@@ -187,6 +210,7 @@ export function defaults(): Stack {
     geo: { rot: 0, flip: false, angle: 0, crop: { x: 0, y: 0, w: 1, h: 1 }, aspect: "free", auto: true },
     masks: [],
     heal: [],
+    ai: { base: null, patches: [], blur: null },
   };
 }
 
@@ -206,6 +230,7 @@ export function normalize(raw: unknown): Stack {
     geo: { ...d.geo, ...(r.geo ?? {}), crop: { ...d.geo.crop, ...(r.geo?.crop ?? {}) } },
     masks: Array.isArray(r.masks) ? r.masks.slice(0, MAX_MASKS) : [],
     heal: Array.isArray(r.heal) ? r.heal.slice(0, MAX_SPOTS) : [],
+    ai: { ...d.ai, ...(r.ai ?? {}), patches: Array.isArray(r.ai?.patches) ? r.ai.patches : [] },
   };
 }
 
@@ -229,6 +254,9 @@ export function summary(s: Stack): string[] {
   if (!geoIsIdentity(s.geo)) out.push("Crop");
   if (s.masks.length) out.push(s.masks.length === 1 ? "1 mask" : `${s.masks.length} masks`);
   if (s.heal.length) out.push(s.heal.length === 1 ? "1 fix" : `${s.heal.length} fixes`);
+  if (s.ai.patches.length) out.push(s.ai.patches.length === 1 ? "1 removal" : `${s.ai.patches.length} removals`);
+  if (s.ai.base) out.push(s.ai.base.kind === "denoise" ? "Denoised" : "Upscaled ×4");
+  if (s.ai.blur) out.push("Background blur");
   return out;
 }
 

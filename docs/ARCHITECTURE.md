@@ -104,6 +104,32 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
   - Names, merges, hiding and "not this person" are the user's, and regrouping never undoes them.
   - Portraits are cropped from the original on demand (`thumb://localhost/face/{id}`) and cached.
 
+## AI editing (stage 5)
+
+- **One pack per feature.** These download on demand like stage 4, each pinned by SHA-256 in `ai/mod.rs`:
+  - remove objects: LaMa
+  - subject: BiRefNet-lite
+  - sky: U²-Net skyseg
+  - denoise: NAFNet-SIDD
+  - upscale: Real-ESRGAN general-x4v3
+  - depth: Depth Anything V2 Small
+
+  The editor offers each download where it's needed. The Folders card lists what is installed and deletes it on request.
+- **Pixels in, pixels out.** `ai_op` runs a model on RGBA the editor sends and returns RGBA, a mask, or JSON.
+  - The editor takes the pixels off the GPU (`Renderer.extract`), decoded and upright, so RAW, HEIC and TIFF work the same as JPEG.
+  - For RAW, highlights above white are rolled off before a model sees them.
+- **Results are layers.** `ai_layer_put` stores a PNG content-addressed by its BLAKE3 hash in `%LOCALAPPDATA%\app.sitara.photos\layers`, and `thumb://localhost/layer/{hash}` serves it. Edit stacks refer to layers by hash; on startup, layers no saved stack mentions are deleted. Uses of layers in the stack:
+  - `ai.base`: a denoised or upscaled copy that stands in for the source. Upscaling changes the working size; masks and spots don't need adjusting, because they live in p-space.
+  - `ai.patches`: removal results. Each is RGBA with a feathered alpha over a source-uv rectangle, composited in order after healing.
+  - `ai.blur`: depth and subject masks for lens blur. The blur radius grows behind the focus plane (the subject's depth), and samples skip the subject so it doesn't bleed. Removing an object recomputes these maps.
+  - AI masks (`kind: "ai"`): subject or sky as a grayscale layer, copied into the mask atlas like a brush mask.
+- **Render order:** source → base blend → heal + patches → background blur → develop.
+- **Describe an edit** (`edit/describe.ts`) is rule-based and fully offline.
+  - Phrases become slider changes, scaled by "a bit" or "very".
+  - Words about the sky or faces become masks: sky segmentation, or radial masks at faces YuNet finds.
+  - Blur and noise words trigger those tools.
+  - Style words ("like an old film") are matched by rendering every look at 224 px and scoring each against the text with CLIP. A look is applied only if it beats the unchanged photo by a clear margin.
+
 ## Conventions
 
 - **Capture time** (`taken`) is the wall-clock time the photo was taken, stored as seconds as if it were UTC. Every UI formatter uses `timeZone: "UTC"`, so a photo taken at 9:00 in Kyoto reads 9:00 everywhere. Order of preference: EXIF `DateTimeOriginal`, then MP4 `mvhd` creation time converted to local time, then file mtime.
@@ -120,11 +146,8 @@ Sitara is a Tauri v2 app: a Rust core that owns the library, and a React UI rend
 | Renders of edited photos | `%LOCALAPPDATA%\app.sitara.photos\thumbs\et\` and `ep\` |
 | Face portraits | `%LOCALAPPDATA%\app.sitara.photos\thumbs\f\` |
 | AI models and runtime (optional) | `%LOCALAPPDATA%\app.sitara.photos\models\` |
+| AI edit layers (removals, masks, denoise/upscale) | `%LOCALAPPDATA%\app.sitara.photos\layers\` |
 
 ## Developing without Tauri
 
 `npm run dev` and open http://localhost:1420 in a browser. Outside Tauri, `src/lib/mock.ts` stands in for the backend, with sample images from picsum.photos, so UI work and browser tests don't need a native build.
-
-## Roadmap hooks
-
-- **AI editing:** to be designed; the editor's edit stack and the on-demand ONNX runtime are its foundations.

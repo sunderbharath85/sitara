@@ -42,6 +42,15 @@ Sitara reads the folders you choose, builds one timeline of every photo and clip
   - **RAW:** Canon, Nikon, Sony, Fujifilm, DNG and more are developed in Rust from the sensor data, so highlights have headroom to recover.
   - Before/after split, clipping warnings, a live histogram, unlimited undo, and copy/paste settings between photos.
   - **Export** a JPEG, PNG or WebP copy at full or reduced size, keeping camera details and (only if you choose) location.
+- **AI editing** (the editor's AI tool, `A`). Everything runs on your computer, and each model downloads only the first time you use it:
+  - **Describe an edit:** type "warmer, a bit moodier, bluer sky" or "brighten her face and blur the background". Plain words become slider changes, sky and face masks, blur or denoise, and styles are matched to a look.
+  - **Remove objects:** paint over a person, sign or speck, and it's filled from its surroundings.
+  - **Select subject, background or sky:** masks drawn by AI, each with its own sliders.
+  - **Background blur:** depth-aware lens blur that keeps the subject sharp.
+  - **Denoise:** removes real camera noise at full resolution.
+  - **Upscale ×4:** for small or old photos.
+  - **Smart enhance:** automatic tone, plus brighter faces and a richer sky when those models are present.
+  - Like every edit, these are non-destructive: AI results are kept as separate layers, so you can undo or revert them.
 - **Albums:** every folder becomes an album automatically; make your own from any selection.
 - **Select and act:** click, Ctrl/Shift-click or lasso to select, then favorite, add to an album, play as a slideshow, or move to the Recycle Bin with **Undo**.
 - **Search** (Ctrl K): file and folder names, cameras, years, months, "videos", "favorites".
@@ -77,7 +86,7 @@ Sitara reads the folders you choose, builds one timeline of every photo and clip
 | 2. Smart albums + cleanup ✅ | Trips and places, duplicate and blurry-shot finder, safe cleanup |
 | 3. Editor ✅ | Non-destructive essentials, looks, curves, color mixer and grading, masks, healing, RAW, export |
 | 4. On-device AI ✅ | Search by meaning (CLIP), faces and people. Models download on demand and run offline |
-| 5. AI editing | To be designed |
+| 5. AI editing ✅ | Describe an edit, remove objects, AI masks, background blur, denoise, upscale, smart enhance. Every model is on demand |
 
 ## Install
 
@@ -115,4 +124,15 @@ How it fits together: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The original
 
 [GPL-3.0-or-later](LICENSE)
 
-On-device AI: [ONNX Runtime](https://onnxruntime.ai) (MIT), [OpenAI CLIP](https://github.com/openai/CLIP) ViT-B/32 (MIT), [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT) and [SFace](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface) (Apache-2.0), downloaded only when you turn a feature on. RAW decoding: [rawler](https://github.com/dnglab/dnglab) (LGPL-2.1). Place names: [GeoNames](https://www.geonames.org) cities database, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Rebuild the embedded copy with `scripts/geonames.py`.
+On-device AI, each downloaded only when you turn a feature on:
+- [ONNX Runtime](https://onnxruntime.ai) (MIT)
+- [OpenAI CLIP](https://github.com/openai/CLIP) ViT-B/32 (MIT)
+- [YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) (MIT) and [SFace](https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface) (Apache-2.0)
+- [LaMa](https://github.com/advimman/lama) (Apache-2.0)
+- [BiRefNet](https://github.com/ZhengPeng7/BiRefNet) (MIT)
+- [Sky segmentation, U²-Net](https://github.com/xiongzhu666/Sky-Segmentation-and-Post-processing) (MIT)
+- [NAFNet](https://github.com/megvii-research/NAFNet) (MIT)
+- [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) (BSD-3-Clause)
+- [Depth Anything V2 Small](https://github.com/DepthAnything/Depth-Anything-V2) (Apache-2.0)
+
+ RAW decoding: [rawler](https://github.com/dnglab/dnglab) (LGPL-2.1). Place names: [GeoNames](https://www.geonames.org) cities database, [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Rebuild the embedded copy with `scripts/geonames.py`.

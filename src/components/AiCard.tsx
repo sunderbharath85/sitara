@@ -98,6 +98,7 @@ export function AiCard() {
           );
         })}
       </div>
+      <EditingPacks />
       {dl && (
         <div className={`ai-dl${dl.error ? " err" : ""}`}>
           {dl.error ? (
@@ -125,6 +126,49 @@ function Learn({ ai, learning, pending }: { ai: AiStatus; learning: boolean; pen
     <div className={`ai-learn${learning ? " acc" : ""}`}>
       <b>{learning ? fmtNum(pending) : fmtNum(ai.indexed)}</b>
       <span>{learning ? "photos to learn" : ai.people ? `photos understood · ${fmtNum(ai.faces)} faces` : "photos understood"}</span>
+    </div>
+  );
+}
+
+const EDITING: [string, string][] = [
+  ["erase", "Remove objects"],
+  ["subject", "Select subject"],
+  ["sky", "Select sky"],
+  ["depth", "Background blur (depth)"],
+  ["denoise", "Denoise"],
+  ["upscale", "Upscale ×4"],
+];
+
+/** Editing models are downloaded from the editor's AI tool; here you can see and delete them. */
+function EditingPacks() {
+  const ai = useStore((s) => s.ai);
+  if (!ai) return null;
+  const on = ai.packs.filter((p) => p.on && EDITING.some(([k]) => k === p.key));
+  return (
+    <div className="ai-edit-packs">
+      <b>AI editing</b>
+      <span>
+        {on.length
+          ? "Downloaded for the editor's AI tool:"
+          : "Remove objects, subject and sky selection, background blur, denoise and upscale download from the editor's AI tool, one at a time, only when you use them."}
+      </span>
+      {on.length > 0 && (
+        <div className="ai-eg">
+          {on.map((p) => (
+            <button
+              key={p.key}
+              className="pack"
+              title="Delete this model"
+              onClick={async () => {
+                await api.aiRemove(p.key);
+                toast(`${EDITING.find(([k]) => k === p.key)?.[1]} model deleted`);
+              }}
+            >
+              {EDITING.find(([k]) => k === p.key)?.[1]} · {p.mb} MB <Icon n="x" s={11} />
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -97,6 +97,11 @@ export interface Suggestion {
 
 export const EMPTY_STATUS: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0, analyzing: false, analysisPending: 0, learning: false, learnPending: 0 };
 
+export interface AiPack {
+  key: "search" | "people" | "erase" | "subject" | "sky" | "denoise" | "upscale" | "depth";
+  on: boolean;
+  mb: number;
+}
 export interface AiStatus {
   supported: boolean;
   search: boolean;
@@ -109,6 +114,7 @@ export interface AiStatus {
   pending: number;
   faces: number;
   working: boolean;
+  packs: AiPack[];
 }
 export interface Person {
   id: number;
@@ -254,8 +260,8 @@ export const api = {
   smartAlbums: () => call<SmartAlbum[]>("smart_albums"),
   cleanupScan: () => call<CleanupReport>("cleanup_scan"),
   aiStatus: () => call<AiStatus>("ai_status"),
-  aiInstall: (feature: "search" | "people") => call<void>("ai_install", { feature }),
-  aiRemove: (feature: "search" | "people") => call<void>("ai_remove", { feature }),
+  aiInstall: (feature: AiPack["key"]) => call<void>("ai_install", { feature }),
+  aiRemove: (feature: AiPack["key"]) => call<void>("ai_remove", { feature }),
   aiSearch: (q: string) => call<number[]>("ai_search", { q }),
   people: () => call<Person[]>("people"),
   personItems: (id: number) => call<number[]>("person_items", { id }),
@@ -273,6 +279,18 @@ export const api = {
     const un = listen("ai-changed", () => cb());
     return () => void un.then((f) => f());
   },
+  /** Run an AI editing model on pixels (RGBA); returns RGBA, a mask, or JSON bytes. */
+  async aiOp(head: { op: string; w: number; h: number; q?: string; n?: number }, parts: Uint8Array[]): Promise<ArrayBuffer> {
+    if (mock) return mock.aiOp(head, parts);
+    const body = await rawBody(head, parts.map((p) => new Blob([p as BlobPart])));
+    return invoke<ArrayBuffer>("ai_op", body);
+  },
+  /** Keep an AI edit's pixels (PNG); returns its hash. */
+  async layerPut(png: Blob): Promise<string> {
+    if (mock) return mock.layerPut(png);
+    return invoke<string>("ai_layer_put", new Uint8Array(await png.arrayBuffer()));
+  },
+  aiRelease: () => (mock ? Promise.resolve() : call<void>("ai_release")),
   editLoad: (id: number) => call<string | null>("edit_load", { id }),
   editRevert: (id: number) => call<boolean>("edit_revert", { id }),
   /** Save an edit stack plus the editor's renders (grid thumbnail, large preview). Returns the revision. */
@@ -344,6 +362,9 @@ export const api = {
 
 export const thumbUrl = (id: number, ver: number) =>
   mock ? mock.thumbUrl(id) : `${convertFileSrc(String(id), "thumb")}?v=${ver}`;
+
+/** Pixels an AI edit made, by hash. */
+export const layerUrl = (hash: string) => (mock ? mock.layerUrl(hash) : `${convertFileSrc("layer", "thumb")}/${hash}`);
 
 /** Square portrait of a detected face. */
 export const faceUrl = (faceId: number) => (mock ? mock.faceUrl(faceId) : `${convertFileSrc("face", "thumb")}/${faceId}`);

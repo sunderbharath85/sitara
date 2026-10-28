@@ -2,22 +2,25 @@
 // renderer turns it into pixels; saving stores the stack plus a thumbnail and preview of the result.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { drawHist } from "../../lib/analyze";
-import { api, detailCached, forgetDetail, thumbUrl, type Lib, type MediaDetail } from "../../lib/api";
+import { api, detailCached, forgetDetail, layerUrl, thumbUrl, type Lib, type MediaDetail } from "../../lib/api";
+import * as aiops from "../../lib/edit/aiops";
+import { plan } from "../../lib/edit/describe";
 import { basename, fmtSize } from "../../lib/format";
 import { mul, outSize, outToSrc, refit, type Mat } from "../../lib/edit/geometry";
 import { autoSource, autoTone, colorOffset } from "../../lib/edit/heal";
 import { LOOKS } from "../../lib/edit/looks";
 import { Renderer } from "../../lib/edit/renderer";
 import { loadSource } from "../../lib/edit/source";
-import { clone, defaults, isIdentity, MAX_MASKS, MAX_SPOTS, newId, normalize, summary, type Geo, type Mask, type Pt, type Stack } from "../../lib/edit/stack";
+import { clone, defaults, isIdentity, MAX_MASKS, MAX_SPOTS, newId, normalize, summary, type AiMask, type Geo, type Mask, type Pt, type Stack, type Stroke } from "../../lib/edit/stack";
 import { clampPan, layout, type View } from "../../lib/edit/view";
 import { store, useStore } from "../../lib/store";
 import { Icon } from "../Icon";
 import { toast } from "../Toasts";
-import { CropOverlay, HealOverlay, MaskOverlay } from "./overlays";
+import { AiPanel, type AiAction } from "./AiPanel";
+import { CropOverlay, EraseOverlay, HealOverlay, MaskOverlay } from "./overlays";
 import { AdjustPanel, ColorPanel, CropPanel, CurvesPanel, HealPanel, LooksPanel, MasksPanel, type HealOpts } from "./panels";
 
-type Tool = "looks" | "adjust" | "color" | "curves" | "crop" | "masks" | "heal";
+type Tool = "looks" | "adjust" | "color" | "curves" | "crop" | "masks" | "heal" | "ai";
 const TOOLS: { k: Tool; label: string; icon: string; hint: string }[] = [
   { k: "looks", label: "Looks", icon: "spark", hint: "1" },
   { k: "adjust", label: "Adjust", icon: "sliders", hint: "2" },
@@ -26,6 +29,7 @@ const TOOLS: { k: Tool; label: string; icon: string; hint: string }[] = [
   { k: "crop", label: "Crop", icon: "crop", hint: "R" },
   { k: "masks", label: "Masks", icon: "mask", hint: "M" },
   { k: "heal", label: "Heal", icon: "heal", hint: "H" },
+  { k: "ai", label: "AI", icon: "wand", hint: "A" },
 ];
 const TITLES: Record<Tool, [string, string]> = {
   looks: ["Looks", "one-tap styles, layered under your sliders"],
@@ -35,6 +39,7 @@ const TITLES: Record<Tool, [string, string]> = {
   crop: ["Crop", "frame · straighten · rotate"],
   masks: ["Masks", "local adjustments"],
   heal: ["Heal", "remove spots and specks"],
+  ai: ["AI", "on this computer · nothing uploaded"],
 };
 
 /** Copied settings (Ctrl Shift C), shared between editor sessions. */
@@ -81,6 +86,12 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [open, setOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState<{ label: string; progress: number | null } | null>(null);
+  const [erase, setEraseS] = useState({ on: false, size: 0.03 });
+  const [eraseStrokes, setEraseStrokes] = useState<Stroke[]>([]);
+  const [dims, setDims] = useState("");
+  const dimsRef = useRef("");
+  const drawRef = useRef<() => void>(() => {});
   const alt = useRef(false);
   const space = useRef(false);
   const dpr = devicePixelRatio || 1;
@@ -162,6 +173,8 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
       const st = json ? normalize(JSON.parse(json)) : defaults();
       hadEdits.current = !!json;
       r.load(src);
+      r.layerUrl = layerUrl;
+      r.onLayer = () => drawRef.current();
       if (src.pixels instanceof ImageBitmap) src.pixels.close();
       small.current = src.small;
       saved.current = JSON.stringify(st);
@@ -178,6 +191,7 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
       ac.abort();
       r?.dispose();
       R.current = null;
+      api.aiRelease().catch(() => {});
     };
   }, [id, replace]);
 
@@ -204,7 +218,8 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
   const L = useMemo(() => {
     if (phase !== "ready" || !R.current) return null;
     return layout(R.current.W, R.current.H, stack.geo, stage, dpr, view, cropping);
-  }, [phase, stack.geo, stage, dpr, view, cropping]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, stack.geo, stage, dpr, view, cropping, dims]);
 
   const draw = useCallback(() => {
     const r = R.current,
@@ -217,6 +232,12 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
       cv.height = bh;
     }
     r.setStack(stackRef.current);
+    // an upscale changes the working size: lay out again
+    const dk = `${r.W}x${r.H}`;
+    if (dk !== dimsRef.current) {
+      dimsRef.current = dk;
+      setDims(dk);
+    }
     r.draw(null, bw, bh, L.fragToSrc, L.fragToOut, L.outPx, {
       split: split != null && !cropping ? split * dpr : -1,
       before,
@@ -225,6 +246,7 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
       sharpStep: Math.max(1, (0.75 / L.scale) / dpr),
     });
   }, [L, stage, dpr, split, cropping, before, clip, tool, overlay, maskSel]);
+  drawRef.current = () => requestAnimationFrame(draw);
   const frameReq = useRef(0);
   const requestDraw = useCallback(() => {
     cancelAnimationFrame(frameReq.current);
@@ -351,6 +373,191 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
     }
   };
 
+  // ---------- AI ----------
+
+  const ai = useStore((s) => s.ai);
+  const packOn = (k: string) => !!ai?.packs.find((p) => p.key === k && p.on);
+  const runAi = async (label: string, fn: (progress: (f: number) => void) => Promise<void>) => {
+    if (aiBusy) return;
+    setAiBusy({ label, progress: null });
+    try {
+      await fn((f) => setAiBusy({ label, progress: f }));
+    } catch (e) {
+      toast(`${label} didn't work: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setAiBusy(null);
+      requestDraw();
+    }
+  };
+  const aiMask = (what: "subject" | "sky", layer: string, invert: boolean, adj: AiMask["adj"] = {}): AiMask => ({
+    id: newId(),
+    kind: "ai",
+    what,
+    layer,
+    invert,
+    amount: 100,
+    adj,
+    name: invert ? "Background" : what === "sky" ? "Sky" : "Subject",
+  });
+  const addAiMask = async (what: "subject" | "sky", invert: boolean, adj: AiMask["adj"] = {}, select = true) => {
+    const r = R.current!;
+    if (stackRef.current.masks.length >= MAX_MASKS) throw new Error(`up to ${MAX_MASKS} masks per photo`);
+    const layer = await aiops.segment(r, what);
+    up((s) => void s.masks.push(aiMask(what, layer, invert, adj)));
+    if (select) {
+      setMaskSel(stackRef.current.masks.length - 1);
+      setToolS("masks");
+      setOverlay(true);
+      setTimeout(() => setOverlay(false), 1600);
+    }
+  };
+  /** Depth and subject maps for background blur, from the current pixels (keeps the user's strength). */
+  const addBlur = async () => {
+    const r = R.current!;
+    const sd = await aiops.segmentData(r, "subject");
+    const subject = await aiops.keepMaskData(r, sd);
+    const d = await aiops.depth(r, sd);
+    const prev = stackRef.current.ai.blur;
+    up((s) => void (s.ai.blur = { depth: d.layer, subject, amount: prev?.amount ?? 60, focus: d.focus }));
+  };
+  const faceMasks = async (adj: AiMask["adj"]) => {
+    const r = R.current!;
+    const boxes = await aiops.faces(r);
+    if (!boxes.length) throw new Error("no faces found");
+    const [ax, ay] = r.asp;
+    up((s) => {
+      for (const [x, y, w, h] of boxes.slice(0, MAX_MASKS - s.masks.length)) {
+        const c: Pt = [(x + w / 2) * ax, (y + h / 2) * ay];
+        const rad = Math.max(w * ax, h * ay) * 0.75;
+        s.masks.push({ id: newId(), kind: "radial", name: "Face", c, r: [rad, rad * 1.25], angle: 0, feather: 70, invert: false, amount: 100, adj });
+      }
+    });
+    return boxes.length;
+  };
+  const rankLooks = async (q: string) => {
+    const r = R.current!;
+    const base = clone(stackRef.current);
+    const map = outToSrc(r.W, r.H, base.geo);
+    const [ow, oh] = outSize(r.W, r.H, base.geo);
+    const A = ow / oh;
+    const tile: Mat = A > 1 ? [1 / A, 0, (1 - 1 / A) / 2, 0, 1, 0] : [1, 0, 0, 0, A, (1 - A) / 2];
+    const cand = [null, ...LOOKS.map((l) => l.id)];
+    const renders: Uint8Array[] = [];
+    for (const id of cand) {
+      const s = clone(base);
+      s.look = id ? { id, amt: 100 } : null;
+      r.setStack(s);
+      renders.push(new Uint8Array((await r.pixels(224, 224, mul(map, tile))).buffer));
+    }
+    r.setStack(stackRef.current);
+    const scores = await aiops.rank(q, renders);
+    let best = 0;
+    scores.forEach((v, i) => v > scores[best] && (best = i));
+    // looks are subtle to CLIP: only take one that is clearly closer to the words than the photo as it is
+    return best > 0 && scores[best] - scores[0] > 0.012 ? LOOKS[best - 1] : null;
+  };
+
+  const doAi = (a: AiAction, text?: string) => {
+    const r = R.current;
+    if (!r) return;
+    if (a === "remove")
+      return runAi("Removing", async () => {
+        const patch = await aiops.removeObjects(r, eraseStrokes);
+        up((s) => void s.ai.patches.push(patch));
+        setEraseStrokes([]);
+        // the blur's depth and subject maps still show what was removed: read them again
+        if (stackRef.current.ai.blur) {
+          r.setStack(stackRef.current);
+          await addBlur();
+        }
+        toast("Removed · fine-tune with Heal, or undo with Ctrl Z");
+      });
+    if (a === "subject" || a === "sky" || a === "background")
+      return runAi(a === "sky" ? "Finding the sky" : a === "subject" ? "Finding the subject" : "Finding the background", () => addAiMask(a === "sky" ? "sky" : "subject", a === "background"));
+    if (a === "blur") return runAi("Reading depth", addBlur);
+    if (a === "denoise")
+      return runAi("Denoising", async (p) => {
+        const layer = await aiops.tiled(r, "denoise", p);
+        up((s) => void (s.ai.base = { kind: "denoise", layer, amount: 100 }));
+      });
+    if (a === "upscale") {
+      const [w, h] = r.sourceSize;
+      if (Math.max(w, h) > 1600) return toast("Upscale is for small photos, up to 1600 px on the long side");
+      return runAi("Upscaling", async (p) => {
+        const layer = await aiops.tiled(r, "upscale", p);
+        up((s) => void (s.ai.base = { kind: "upscale", layer, amount: 100 }));
+        toast(`Upscaled to ${w * 4} × ${h * 4}`);
+      });
+    }
+    if (a === "enhance")
+      return runAi("Enhancing", async () => {
+        if (small.current) {
+          const t = autoTone(small.current, r.enc);
+          up((s) => Object.assign(s.adj, t));
+        }
+        const extra: string[] = [];
+        if (packOn("people")) {
+          const n = await faceMasks({ exposure: 0.2, shadows: 15, clarity: -6 }).catch(() => 0);
+          if (n) extra.push(n === 1 ? "face" : `${n} faces`);
+        }
+        if (packOn("sky") && stackRef.current.masks.length < MAX_MASKS) {
+          // only when there is real sky in the picture
+          const sky = await aiops.segmentData(r, "sky").catch(() => null);
+          const cover = sky ? sky.gray.reduce((n, v) => n + (v > 128 ? 1 : 0), 0) / sky.gray.length : 0;
+          if (sky && cover > 0.04) {
+            const layer = await aiops.keepMaskData(r, sky);
+            up((s) => void s.masks.push(aiMask("sky", layer, false, { highlights: -25, saturation: 12, dehaze: 10 })));
+            extra.push("sky");
+          }
+        }
+        toast(`Enhanced${extra.length ? ` · ${extra.join(" and ")} too` : ""}`);
+      });
+    if (a === "describe" && text)
+      return runAi("Working on it", async () => {
+        const p = plan(text);
+        const notes: string[] = [];
+        up((s) => p.apply(s));
+        for (const need of p.needs) {
+          if (need === "sky") {
+            if (packOn("sky")) await addAiMask("sky", false, p.sky, false);
+            else notes.push("sky needs the Sky model");
+          } else if (need === "faces") {
+            if (packOn("people")) await faceMasks(p.face).catch(() => notes.push("no faces found"));
+            else notes.push("faces need People");
+          } else if (need === "blur") {
+            if (packOn("depth") && packOn("subject")) await addBlur();
+            else notes.push("blur needs the Depth and Subject models");
+          } else if (need === "denoise") {
+            if (packOn("denoise")) {
+              const layer = await aiops.tiled(r, "denoise", () => {});
+              up((s) => void (s.ai.base = { kind: "denoise", layer, amount: 100 }));
+            } else notes.push("denoise needs its model");
+          }
+        }
+        const done = [...p.done];
+        if (p.style && packOn("search")) {
+          const look = await rankLooks(text);
+          if (look) {
+            up((s) => void (s.look = { id: look.id, amt: 85 }));
+            done.push(`Look: ${look.name}`);
+          }
+        } else if (p.style && !done.length) notes.push("styles need Search by meaning");
+        toast(done.length ? `${done.join(" · ")}${notes.length ? ` (${notes.join("; ")})` : ""}` : `Didn't catch that${notes.length ? `: ${notes.join("; ")}` : ""}`);
+      });
+  };
+  const eraseStroke = (ph: "start" | "move" | "end", p: Pt) => {
+    if (ph === "start") setEraseStrokes((l) => [...l, { r: erase.size, feather: 0, flow: 1, erase: false, pts: [p[0], p[1]] }]);
+    else if (ph === "move")
+      setEraseStrokes((l) => {
+        const last = l[l.length - 1];
+        if (!last) return l;
+        const lx = last.pts[last.pts.length - 2],
+          ly = last.pts[last.pts.length - 1];
+        if (Math.hypot(p[0] - lx, p[1] - ly) < last.r * 0.15) return l;
+        return [...l.slice(0, -1), { ...last, pts: [...last.pts, p[0], p[1]] }];
+      });
+  };
+
   const auto = () => {
     if (!small.current || !R.current) return;
     const a = autoTone(small.current, R.current.enc);
@@ -358,7 +565,7 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
     toast("Auto tone applied · tweak anything you like");
   };
 
-  const addMask = (kind: Mask["kind"]) => {
+  const addMask = (kind: "linear" | "radial" | "brush") => {
     const r = R.current;
     if (!r || stackRef.current.masks.length >= MAX_MASKS) return;
     const [ax, ay] = r.asp;
@@ -508,6 +715,7 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
       else if (lk === "r") setToolS("crop");
       else if (lk === "m") setToolS("masks");
       else if (lk === "h") setToolS("heal");
+      else if (lk === "a") setToolS("ai");
       else if (/^[1-4]$/.test(k)) setToolS(TOOLS[+k - 1].k);
       else if ((k === "Delete" || k === "Backspace") && tool === "masks" && maskSel >= 0) {
         up((s) => void s.masks.splice(maskSel, 1));
@@ -670,6 +878,21 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
             onStroke={onStroke}
           />
         )}
+        {showOverlays && tool === "ai" && erase.on && <EraseOverlay L={L} strokes={eraseStrokes} size={erase.size} onStroke={eraseStroke} />}
+        {aiBusy && (
+          <div className="ai-busy">
+            <span className="ai-orb spin">
+              <Icon n="spark" s={20} />
+            </span>
+            <b>{aiBusy.label}…</b>
+            {aiBusy.progress != null && (
+              <i>
+                <em style={{ width: `${Math.round(aiBusy.progress * 100)}%` }} />
+              </i>
+            )}
+            <small>on this computer</small>
+          </div>
+        )}
         {showOverlays && tool === "heal" && <HealOverlay L={L} spots={stack.heal} sel={spotSel} size={healOpts.size} onAdd={addSpot} onMove={moveSpot} onSelect={setSpotSel} />}
         {split != null && !cropping && phase === "ready" && (
           <div
@@ -729,6 +952,19 @@ function EditorInner({ id, lib }: { id: number; lib: Lib }) {
               {tool === "crop" && <CropPanel g={stack.geo} setGeo={setGeo} />}
               {tool === "masks" && (
                 <MasksPanel s={stack} up={up} sel={maskSel} setSel={setMaskSel} add={addMask} overlay={overlay} setOverlay={setOverlay} brush={brush} setBrush={setBrush} />
+              )}
+              {tool === "ai" && (
+                <AiPanel
+                  s={stack}
+                  up={up}
+                  run={doAi}
+                  busy={!!aiBusy}
+                  erase={{ ...erase, strokes: eraseStrokes.length }}
+                  setErase={(e) => {
+                    setEraseS(e);
+                    if (!e.on) setEraseStrokes([]);
+                  }}
+                />
               )}
               {tool === "heal" && <HealPanel s={stack} up={up} sel={spotSel} setSel={setSpotSel} opts={healOpts} setOpts={setHealOpts} />}
             </>

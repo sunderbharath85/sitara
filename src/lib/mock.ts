@@ -50,7 +50,13 @@ export function createMock() {
   const listeners = new Map<string, Set<(p: unknown) => void>>();
   const emit = (ev: string, p?: unknown) => listeners.get(ev)?.forEach((f) => f(p));
   const status: Status = { scanning: false, folder: null, found: 0, indexed: 0, warming: false, thumbsPending: 0, thumbsDone: 0, analyzing: false, analysisPending: 0, learning: false, learnPending: 0 };
-  const ai: AiStatus = { supported: true, search: false, people: false, searchMb: 154, peopleMb: 38, runtimeMb: 17, download: null, indexed: 0, pending: 0, faces: 0, working: false };
+  const ai: AiStatus = {
+    supported: true, search: false, people: false, searchMb: 154, peopleMb: 38, runtimeMb: 17, download: null, indexed: 0, pending: 0, faces: 0, working: false,
+    packs: (
+      [["search", 155], ["people", 38], ["erase", 208], ["subject", 114], ["sky", 175], ["denoise", 58], ["upscale", 4], ["depth", 99]] as const
+    ).map(([key, mb]) => ({ key, on: false, mb })),
+  };
+  const layers = new Map<string, string>();
   // people are faked from photo ids: a "face id" is the photo it was found in
   const people: (Person & { ids: number[] })[] = [];
   let folders: FolderInfo[] = [{ id: 1, path: ROOT, count: items.length, photos: 0, videos: 0, bytes: 9.4e9, lastScan: Date.now() }];
@@ -170,7 +176,8 @@ export function createMock() {
     open_external: () => undefined,
     ai_status: () => ({ ...ai }),
     ai_install: (a) => {
-      const total = (a.feature === "people" ? ai.peopleMb : ai.searchMb) + ai.runtimeMb;
+      const pack = ai.packs.find((p) => p.key === a.feature)!;
+      const total = pack.mb + ai.runtimeMb;
       let done = 0;
       const iv = setInterval(() => {
         done = Math.min(total, done + total / 14);
@@ -180,6 +187,11 @@ export function createMock() {
           clearInterval(iv);
           ai.download = null;
           ai.runtimeMb = 0;
+          pack.on = true;
+          if (a.feature !== "search" && a.feature !== "people") {
+            emit("ai-progress");
+            return;
+          }
           if (a.feature === "people") {
             ai.people = true;
             const L = live().filter((x) => !x.kind);
@@ -196,6 +208,7 @@ export function createMock() {
       }, 160);
     },
     ai_remove: (a) => {
+      ai.packs.find((p) => p.key === a.feature)!.on = false;
       if (a.feature === "people") {
         ai.people = false;
         people.length = 0;
@@ -320,6 +333,46 @@ export function createMock() {
       const ar = x?.ar ?? 1.5;
       return `https://picsum.photos/seed/s${id}/${Math.round(360 * ar)}/360`;
     },
+    // stand-ins for the AI editing models, so the editor's AI tools can be exercised in a browser
+    async aiOp(head: { op: string; w: number; h: number; q?: string; n?: number }, parts: Uint8Array[]): Promise<ArrayBuffer> {
+      const { w, h } = head;
+      await new Promise((r) => setTimeout(r, 300));
+      const px = parts[0];
+      const gray = (f: (x: number, y: number) => number) => {
+        const out = new Uint8Array(w * h);
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) out[y * w + x] = Math.round(255 * Math.min(1, Math.max(0, f(x / w, y / h))));
+        return out.buffer;
+      };
+      const json = (v: unknown) => new TextEncoder().encode(JSON.stringify(v)).buffer;
+      switch (head.op) {
+        case "inpaint": {
+          const m = parts[1];
+          const out = new Uint8Array(px);
+          let r = 0, g = 0, b = 0, n = 0;
+          for (let i = 0; i < w * h; i++) if (!m[i]) (r += px[i * 4], g += px[i * 4 + 1], b += px[i * 4 + 2], n++);
+          for (let i = 0; i < w * h; i++) if (m[i] > 127) out.set([r / n, g / n, b / n, 255], i * 4);
+          return out.buffer;
+        }
+        case "subject": return gray((x, y) => 1 - Math.hypot((x - 0.5) / 0.3, (y - 0.55) / 0.42) ** 4);
+        case "sky": return gray((_, y) => 1 - y / 0.35);
+        case "depth": return gray((_, y) => y);
+        case "denoise": return new Uint8Array(px).buffer;
+        case "upscale": {
+          const out = new Uint8Array(w * h * 64);
+          for (let y = 0; y < h * 4; y++) for (let x = 0; x < w * 4; x++) out.set(px.subarray(((y >> 2) * w + (x >> 2)) * 4, ((y >> 2) * w + (x >> 2)) * 4 + 4), (y * w * 4 + x) * 4);
+          return out.buffer;
+        }
+        case "faces": return json([[0.42, 0.22, 0.16, 0.2]]);
+        case "rank": return json(Array.from({ length: head.n ?? 1 }, (_, i) => 0.2 + ((i * 7919 + (head.q?.length ?? 0) * 31) % 97) / 2000));
+      }
+      throw new Error(`mock: no AI op ${head.op}`);
+    },
+    async layerPut(png: Blob) {
+      const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", await png.arrayBuffer())), (b) => b.toString(16).padStart(2, "0")).join("");
+      if (!layers.has(hash)) layers.set(hash, URL.createObjectURL(png));
+      return hash;
+    },
+    layerUrl: (hash: string) => layers.get(hash) ?? "",
     faceUrl: (faceId: number) => `https://picsum.photos/seed/s${faceId}/240/240`,
     fullUrl: (id: number) => edits.get(id)?.preview ?? original(id),
     originalUrl: (id: number) => original(id),
