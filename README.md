@@ -4,6 +4,8 @@ A fast, private photo and video gallery for Windows, macOS and Linux. Built with
 
 Sitara reads the folders you choose, builds one timeline of every photo and clip, and keeps everything on your device. No account, no upload, no cloud.
 
+**[sunderbharath85.github.io/sitara](https://sunderbharath85.github.io/sitara/)**
+
 > **Status: early development.** The foundation, smart albums, cleanup, the editor and on-device AI work end to end on Windows; macOS and Linux builds run in CI. Expect rough edges.
 
 ## What works today
